@@ -1,0 +1,14 @@
+/target
+/dist
+/.dioxus
+*.rs.bk
+*.pdb
+.DS_Store
+.env
+
+# Local profiles and secrets must NEVER be committed.
+# (at runtime they live in ~/Library/Application Support/dev.Taicho.taicho/ + Keychain)
+*.local.json
+profiles.json
+window_state.json
+settings.json

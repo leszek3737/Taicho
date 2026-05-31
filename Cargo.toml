@@ -1,0 +1,84 @@
+[package]
+name = "taicho"
+version = "0.1.0"
+edition = "2024"
+# No `rust-version`: this is an application, not a published library, so it keeps no MSRV
+# contract. Always built with the latest stable Rust (pinned to `stable` in rust-toolchain.toml).
+description = "Desktop admin/inspector for Honcho agent memory."
+license = "MIT"
+repository = "https://github.com/leszek3737/Taicho"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["desktop"] }
+honcho-ai = { version = "0.1", features = ["rustls-tls", "tracing"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+directories = "6"
+keyring-core = "1"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+pulldown-cmark = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store = "1"
+
+[features]
+# Test-only: in-memory mock client for actor smoke tests (see tests/actor_smoke.rs).
+mock-honcho = []
+
+# --- Lints (enforce the rules from AGENT.md §3) ------------------------------
+[lints.rust]
+unsafe_code = "forbid"          # a desktop client has no need for unsafe
+
+[lints.clippy]
+# Hard errors — hygiene with zero friction:
+print_stdout = "deny"           # use `tracing`, never println!
+print_stderr = "deny"           # ditto (test files override with #![allow(clippy::print_stderr)])
+dbg_macro    = "deny"           # no stray dbg!()
+unwrap_used  = "deny"           # no .unwrap() in non-test code
+panic        = "deny"           # nor panic!()
+
+# Quality signals (also fail CI via `-D warnings`):
+inefficient_to_string  = "warn"
+module_inception       = "warn"
+too_many_lines         = "warn"
+needless_pass_by_value = "warn" # may need a local #[allow] on Dioxus props/handlers
+
+# Intentionally NOT enabled (see AGENT.md §3):
+# - expect_used: a fail-fast at startup (init_keyring in main.rs) is acceptable in a binary.
+# - todo / unimplemented: kept allowed until v0.1 so WIP stubs don't block CI; flip to "warn" after MVP.
+# - cognitive_complexity / redundant_clone: clippy `nursery` — opt in later if false positives are acceptable.
+#
+# Test files override the restriction lints with:
+#   #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
+
+# --- Profiles ----------------------------------------------------------------
+# Faster dev / hot-reload: optimize dependencies, keep our own code light.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Smaller, faster release bundle. We do NOT set panic = "abort" — wry/Dioxus may
+# rely on unwinding (catch_unwind).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# --- Local SDK development ---------------------------------------------------
+# Uncomment to build against a local clone of the SDK instead of the crates.io release.
+# [patch.crates-io]
+# honcho-ai = { path = "../honcho-rust-sdk" }

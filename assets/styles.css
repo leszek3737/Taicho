@@ -1,0 +1,45 @@
+/* Taicho — global styling. Decision: hand-written CSS + CSS variables (BLUEPRINT §14).
+   Theme via prefers-color-scheme + override from AppState::theme (data-theme on <html>). */
+
+:root {
+  --bg: #ffffff;
+  --bg-elev: #f6f6f7;
+  --fg: #1d1d1f;
+  --fg-muted: #6b6b70;
+  --border: #e3e3e6;
+  --accent: #2f6feb;
+  --danger: #d23b3b;
+  --ok: #2e9e5b;
+  --radius: 8px;
+  --gap: 8px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --bg-elev: #2a2a2d;
+    --fg: #f2f2f7;
+    --fg-muted: #9a9aa0;
+    --border: #3a3a3d;
+    --accent: #4b8bff;
+  }
+}
+
+/* A manual override from the app settings takes precedence over the system theme. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 14px;
+}
+
+code, pre { font-family: var(--mono); }
