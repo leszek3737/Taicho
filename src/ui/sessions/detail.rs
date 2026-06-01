@@ -135,6 +135,7 @@ fn SessionDetailInner(session_id: String) -> Element {
 #[component]
 fn SessionPeersTab(session_id: String) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut state: AppState = use_context();
     let mut peers: Signal<Option<AppResult<Vec<SessionPeerRow>>>> = use_signal(|| None);
     let mut add_peer_id: Signal<String> = use_signal(String::new);
     let confirm_remove: Signal<Option<String>> = use_signal(|| None);
@@ -214,8 +215,19 @@ fn SessionPeersTab(session_id: String) -> Element {
                                             }
                                             Ok(Err(e)) => {
                                                 tracing::warn!("Add peer failed: {e}");
+                                                state.status_message.set(
+                                                    format!(
+                                                        "Failed to add peer: {}",
+                                                        e.user_message()
+                                                    ),
+                                                );
                                             }
-                                            Err(_) => {}
+                                            Err(_) => {
+                                                state.status_message.set(
+                                                    "Failed to add peer: channel closed"
+                                                        .to_string(),
+                                                );
+                                            }
                                         }
                                     });
                                     add_peer_id.set(String::new());
@@ -257,6 +269,7 @@ fn SessionPeerRowView(
     let mut observe_me: Signal<Option<bool>> = use_signal(|| peer.observe_me);
     let mut observe_others: Signal<Option<bool>> = use_signal(|| peer.observe_others);
     let is_confirming = confirm_remove.read().as_deref() == Some(&peer.id);
+    let mut state: AppState = use_context();
 
     rsx! {
         div { class: "session-peer-row",
@@ -273,6 +286,7 @@ fn SessionPeerRowView(
                                 let current = *observe_me.read();
                                 move |_| {
                                     let new_val = Some(!current.unwrap_or(false));
+                                    let old_val = current;
                                     observe_me.set(new_val);
                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                     actor.send(Cmd::SetSessionPeerConfig {
@@ -283,8 +297,17 @@ fn SessionPeerRowView(
                                         reply: tx,
                                     });
                                     spawn(async move {
-                                        if rx.await.is_err() {
-                                            tracing::warn!("SetSessionPeerConfig failed");
+                                        match rx.await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                tracing::warn!("SetSessionPeerConfig failed: {e}");
+                                                observe_me.set(old_val);
+                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                observe_me.set(old_val);
+                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                            }
                                         }
                                     });
                                 }
@@ -302,6 +325,7 @@ fn SessionPeerRowView(
                                 let current = *observe_others.read();
                                 move |_| {
                                     let new_val = Some(!current.unwrap_or(false));
+                                    let old_val = current;
                                     observe_others.set(new_val);
                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                     actor.send(Cmd::SetSessionPeerConfig {
@@ -312,8 +336,17 @@ fn SessionPeerRowView(
                                         reply: tx,
                                     });
                                     spawn(async move {
-                                        if rx.await.is_err() {
-                                            tracing::warn!("SetSessionPeerConfig failed");
+                                        match rx.await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                tracing::warn!("SetSessionPeerConfig failed: {e}");
+                                                observe_others.set(old_val);
+                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                observe_others.set(old_val);
+                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                            }
                                         }
                                     });
                                 }
@@ -339,12 +372,21 @@ fn SessionPeerRowView(
                                         peer_id: pid.clone(),
                                         reply: tx,
                                     });
+                                    let on_refresh = on_refresh;
                                     spawn(async move {
-                                        if rx.await.is_ok() {
+                                        match rx.await {
+                                            Ok(Ok(())) => {
+                                                on_refresh.call(());
+                                            }
+                                            Ok(Err(e)) => {
+                                                state.status_message.set(format!("Failed to remove peer: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                state.status_message.set("Failed to remove peer: channel closed".to_string());
+                                            }
                                         }
                                     });
                                     confirm_remove.set(None);
-                                    on_refresh.call(());
                                 }
                             },
                             "Yes"

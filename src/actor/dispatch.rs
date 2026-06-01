@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use futures_util::future::join_all;
 use honcho_ai::Honcho;
 use tracing::{debug, error};
 
@@ -562,16 +563,22 @@ async fn get_session_context(client: &Honcho, session_id: &str) -> AppResult<Ses
 async fn list_session_peers(client: &Honcho, session_id: &str) -> AppResult<Vec<SessionPeerRow>> {
     let session = client.session(session_id, None, None, None).await?;
     let peers = session.peers().await?;
-    let mut rows = Vec::with_capacity(peers.len());
-    for p in &peers {
-        let cfg = session.get_peer_configuration(p.id()).await.ok();
-        rows.push(SessionPeerRow {
-            id: p.id().to_owned(),
+    let configs = join_all(peers.iter().map(|p| {
+        let session = &session;
+        async move {
+            let cfg = session.get_peer_configuration(p.id()).await.ok();
+            (p.id().to_owned(), cfg)
+        }
+    }))
+    .await;
+    Ok(configs
+        .into_iter()
+        .map(|(id, cfg)| SessionPeerRow {
+            id,
             observe_me: cfg.as_ref().and_then(|c| c.observe_me),
             observe_others: cfg.as_ref().and_then(|c| c.observe_others),
-        });
-    }
-    Ok(rows)
+        })
+        .collect())
 }
 
 async fn add_session_peer(client: &Honcho, session_id: &str, peer_id: &str) -> AppResult<()> {
@@ -608,6 +615,9 @@ async fn set_session_peer_config(
     observe_others: Option<bool>,
 ) -> AppResult<()> {
     let session = client.session(session_id, None, None, None).await?;
+    // SessionPeerConfig is #[non_exhaustive] upstream, so direct struct
+    // construction is not possible from outside the defining crate. Round-trip
+    // through serde_json to build it.
     let mut cfg_json = serde_json::Map::new();
     if let Some(v) = observe_me {
         cfg_json.insert("observe_me".to_owned(), serde_json::Value::Bool(v));
