@@ -12,6 +12,4 @@ long_description = "Desktop admin tool for Honcho agent memory."
 
 [bundle.macos]
 minimum_system_version = "12.0"
-# NSAppTransportSecurity → NSAllowsLocalNetworking = true is required to connect to
-# http://localhost:8000 without TLS. In Dioxus 0.7, add this via the Info.plist embedded
-# in the bundle (see BLUEPRINT.md §15 "Info.plist additions") during M0/M9.
+exception_domain = "localhost"
