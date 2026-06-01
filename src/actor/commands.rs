@@ -2,14 +2,15 @@ use tokio::sync::oneshot;
 
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
-    ConclusionRow, DomainPage, MessageRow, PeerDetails, PeerRow, SessionDetails, SessionRow,
-    SessionSummariesView, WorkspaceInfo,
+    ConclusionRow, DomainPage, MessageRow, PeerContextView, PeerDetails, PeerRow,
+    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
+    WorkspaceInfo,
 };
 use taicho::error::{AppError, AppResult};
 use taicho::persistence::ConnectionProfile;
 
 // Some Cmd variants are not yet wired to UI but are part of the actor protocol
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_lines)]
 pub enum Cmd {
     // --- Connection (M1) ---
     Connect {
@@ -58,6 +59,16 @@ pub enum Cmd {
         reply: oneshot::Sender<AppResult<String>>,
     },
 
+    // --- Peers completion (M2) ---
+    GetPeerContext {
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<PeerContextView>>,
+    },
+    ListPeerSessions {
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<Vec<SessionRow>>>,
+    },
+
     // --- Sessions (M3) ---
     ListSessions {
         page: u64,
@@ -88,6 +99,40 @@ pub enum Cmd {
     },
     DeleteSession {
         session_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+
+    // --- Sessions completion (M3) ---
+    GetSessionContext {
+        session_id: String,
+        reply: oneshot::Sender<AppResult<SessionContextView>>,
+    },
+
+    // --- Session Peers (M4) ---
+    ListSessionPeers {
+        session_id: String,
+        reply: oneshot::Sender<AppResult<Vec<SessionPeerRow>>>,
+    },
+    AddSessionPeer {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+    RemoveSessionPeer {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+    GetSessionPeerConfig {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<SessionPeerRow>>,
+    },
+    SetSessionPeerConfig {
+        session_id: String,
+        peer_id: String,
+        observe_me: Option<bool>,
+        observe_others: Option<bool>,
         reply: oneshot::Sender<AppResult<()>>,
     },
 
@@ -157,6 +202,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
+    #[allow(clippy::too_many_lines)]
     pub fn reply_with_error(self, err: AppError) {
         match self {
             Self::Connect { reply, .. } => {
@@ -189,6 +235,12 @@ impl Cmd {
             Self::GetPeerRepresentation { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
+            Self::GetPeerContext { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::ListPeerSessions { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
             Self::ListSessions { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
@@ -208,6 +260,24 @@ impl Cmd {
                 let _ = reply.send(Err(err));
             }
             Self::DeleteSession { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::GetSessionContext { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::ListSessionPeers { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::AddSessionPeer { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::RemoveSessionPeer { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::GetSessionPeerConfig { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::SetSessionPeerConfig { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
             Self::ListMessages { reply, .. } => {

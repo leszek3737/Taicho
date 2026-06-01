@@ -69,3 +69,19 @@ pub struct SummaryView {
     pub created_at: String,
     pub token_count: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPeerRow {
+    pub id: String,
+    pub observe_me: Option<bool>,
+    pub observe_others: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionContextView {
+    pub id: String,
+    pub messages_count: usize,
+    pub has_summary: bool,
+    pub peer_representation: Option<String>,
+    pub peer_card: Option<Vec<String>>,
+}
