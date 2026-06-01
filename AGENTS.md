@@ -185,8 +185,6 @@ an optional type in `domain/` + a view in `ui/`. **Do not shortcut this path.**
 
 - **Do not commit/push without an explicit user request.** If you are on `main`, create a
   branch first.
-- End commit messages with:
-  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 - PRs per milestone (BLUEPRINT §16). MVP = M1–M4 → tag `v0.1.0`.
 - Keep the diff within a single milestone/feature; do not mix refactoring with a feature.
 
