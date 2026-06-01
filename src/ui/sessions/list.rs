@@ -54,9 +54,7 @@ pub fn SessionList() -> Element {
     });
 
     use_effect(move || {
-        if sessions.read().is_none() {
-            fetch_sessions.call(1);
-        }
+        fetch_sessions.call(1);
     });
 
     let snapshot = sessions.read().clone();

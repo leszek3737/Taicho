@@ -1,7 +1,5 @@
-#[allow(dead_code)]
 pub type AppResult<T> = Result<T, AppError>;
 
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
@@ -20,7 +18,6 @@ pub enum AppError {
     Validation(String),
 }
 
-#[allow(dead_code)]
 impl AppError {
     pub fn channel_closed(operation: &'static str) -> Self {
         Self::ChannelClosed { operation }

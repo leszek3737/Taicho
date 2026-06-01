@@ -100,6 +100,7 @@ fn InspectorShell() -> Element {
                     match selected_section {
                         InspectorSection::Peers => rsx! { super::peers::PeerList {} },
                         InspectorSection::Sessions => rsx! { super::sessions::SessionList {} },
+                        InspectorSection::Messages => rsx! { super::messages::MessageList {} },
                         InspectorSection::Workspaces => rsx! { super::workspaces::WorkspaceView {} },
                         InspectorSection::Conclusions => rsx! { super::conclusions::ConclusionList {} },
                         _ => {

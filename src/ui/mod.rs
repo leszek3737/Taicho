@@ -2,6 +2,7 @@ pub mod common;
 pub mod conclusions;
 pub mod connection;
 pub mod layout;
+pub mod messages;
 pub mod peers;
 pub mod sessions;
 pub mod workspaces;

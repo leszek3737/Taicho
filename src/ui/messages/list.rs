@@ -68,9 +68,8 @@ pub fn MessageList() -> Element {
 
     use_effect(move || {
         if let Some(ref session_id) = *state.selection.session_id.read() {
-            if messages.read().is_none() {
-                fetch_messages.call((session_id.clone(), 1));
-            }
+            messages.set(None);
+            fetch_messages.call((session_id.clone(), 1));
         } else {
             messages.set(None);
         }

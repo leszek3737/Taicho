@@ -3,27 +3,29 @@ compile_error!("Taicho requires macOS, Windows, or Linux for secret storage");
 
 const KEYRING_SERVICE: &str = "dev.taicho";
 
-pub fn init_keyring() {
+pub fn init_keyring() -> crate::error::AppResult<()> {
     #[cfg(target_os = "macos")]
     {
         let store = apple_native_keyring_store::keychain::Store::new()
-            .expect("failed to init macOS Keychain store");
+            .map_err(crate::error::AppError::Keyring)?;
         keyring_core::set_default_store(store);
     }
 
     #[cfg(target_os = "windows")]
     {
-        let store = windows_native_keyring_store::Store::new()
-            .expect("failed to init Windows Credential store");
+        let store =
+            windows_native_keyring_store::Store::new().map_err(crate::error::AppError::Keyring)?;
         keyring_core::set_default_store(store);
     }
 
     #[cfg(target_os = "linux")]
     {
         let store = dbus_secret_service_keyring_store::Store::new()
-            .expect("failed to init D-Bus Secret Service store");
+            .map_err(crate::error::AppError::Keyring)?;
         keyring_core::set_default_store(store);
     }
+
+    Ok(())
 }
 
 pub fn get_api_key(profile_id: &str) -> crate::error::AppResult<Option<String>> {

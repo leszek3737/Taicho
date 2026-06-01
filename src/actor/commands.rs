@@ -8,6 +8,7 @@ use taicho::domain::{
 use taicho::error::{AppError, AppResult};
 use taicho::persistence::ConnectionProfile;
 
+// Some Cmd variants are not yet wired to UI but are part of the actor protocol
 #[allow(dead_code)]
 pub enum Cmd {
     // --- Connection (M1) ---

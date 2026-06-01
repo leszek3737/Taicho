@@ -62,7 +62,7 @@ fn build_page_numbers(current: u64, total: u64) -> Vec<u64> {
 
     pages.push(1);
 
-    let range_start = (current as i64 - 2).max(2) as u64;
+    let range_start = current.saturating_sub(2).max(2);
     let range_end = (current + 2).min(total - 1);
 
     if range_start > 2 {

@@ -451,6 +451,7 @@ fn map_summary(s: &honcho_ai::types::session::Summary) -> SummaryView {
         message_id: s.message_id.clone(),
         summary_type: SummaryKind::from_str_lossy(match s.summary_type {
             honcho_ai::types::session::SummaryType::Short => "short",
+            honcho_ai::types::session::SummaryType::Long => "long",
             _ => {
                 tracing::warn!("unknown summary_type encountered");
                 "unknown"
@@ -665,8 +666,8 @@ async fn list_conclusions(
     };
     let sdk_page = scope
         .list()
-        .page(page as u32)
-        .size(size as u32)
+        .page(page.try_into().unwrap_or(u32::MAX))
+        .size(size.try_into().unwrap_or(u32::MAX))
         .send()
         .await?;
     Ok(DomainPage {

@@ -54,9 +54,7 @@ pub fn PeerList() -> Element {
     });
 
     use_effect(move || {
-        if peers.read().is_none() {
-            fetch_peers.call(1);
-        }
+        fetch_peers.call(1);
     });
 
     let snapshot = peers.read().clone();
