@@ -705,3 +705,42 @@ button:disabled {
 .conclusion-item-content {
   flex: 1;
 }
+
+/* --- Session peer management (M4) --- */
+.session-peer-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-peer-row:last-child {
+  border-bottom: 0;
+}
+
+.session-peer-row-header {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--gap) * 2);
+  flex-wrap: wrap;
+}
+
+.session-peer-toggles {
+  display: flex;
+  gap: calc(var(--gap) * 2);
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-label input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}

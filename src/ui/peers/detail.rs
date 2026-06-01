@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::actor::commands::Cmd;
 use crate::state::AppState;
-use taicho::domain::PeerDetails;
+use taicho::domain::{PeerContextView, PeerDetails, SessionRow};
 use taicho::error::{AppError, AppResult};
 
 use super::super::common::json_viewer::JsonViewer;
@@ -14,6 +14,8 @@ enum DetailTab {
     Configuration,
     Card,
     Representation,
+    Context,
+    Sessions,
 }
 
 #[component]
@@ -88,6 +90,8 @@ fn PeerDetailInner(peer_id: String) -> Element {
                         TabButton { label: "Configuration", tab: DetailTab::Configuration, active_tab }
                         TabButton { label: "Card", tab: DetailTab::Card, active_tab }
                         TabButton { label: "Representation", tab: DetailTab::Representation, active_tab }
+                        TabButton { label: "Context", tab: DetailTab::Context, active_tab }
+                        TabButton { label: "Sessions", tab: DetailTab::Sessions, active_tab }
                     }
 
                     div { class: "tab-content",
@@ -112,6 +116,12 @@ fn PeerDetailInner(peer_id: String) -> Element {
                                     peer_id: detail.id.clone(),
                                     representation: detail.representation.clone(),
                                 }
+                            },
+                            DetailTab::Context => rsx! {
+                                PeerContextTab { peer_id: detail.id.clone() }
+                            },
+                            DetailTab::Sessions => rsx! {
+                                PeerSessionsTab { peer_id: detail.id.clone() }
                             },
                         }}
                     }
@@ -218,6 +228,150 @@ fn RepresentationTabContent(peer_id: String, representation: Option<String>) -> 
                             message: message.clone(),
                             retryable: false,
                             on_retry: None,
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn PeerContextTab(peer_id: String) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut context: Signal<Option<AppResult<PeerContextView>>> = use_signal(|| None);
+
+    use_effect(move || {
+        let pid = peer_id.clone();
+        context.set(None);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        actor.send(Cmd::GetPeerContext {
+            peer_id: pid,
+            reply: tx,
+        });
+        spawn(async move {
+            let result = rx
+                .await
+                .map_err(|_| AppError::channel_closed("get_peer_context"))
+                .and_then(|r| r);
+            context.set(Some(result));
+        });
+    });
+
+    match &*context.read() {
+        None => rsx! {
+            LoadingView { label: "Loading peer context...".to_string() }
+        },
+        Some(Err(e)) => rsx! {
+            ErrorView {
+                code: e.code().to_string(),
+                message: e.user_message(),
+                retryable: e.is_retryable(),
+                on_retry: None,
+            }
+        },
+        Some(Ok(ctx)) => rsx! {
+            div {
+                div { class: "detail-section",
+                    h3 { "Peer ID" }
+                    p { class: "list-item-id", "{ctx.peer_id}" }
+                }
+                if let Some(target) = &ctx.target_id {
+                    div { class: "detail-section",
+                        h3 { "Target ID" }
+                        p { class: "list-item-id", "{target}" }
+                    }
+                }
+                if let Some(repr) = &ctx.representation {
+                    div { class: "detail-section",
+                        h3 { "Representation" }
+                        pre { class: "representation-view", "{repr}" }
+                    }
+                }
+                if let Some(card) = &ctx.peer_card {
+                    div { class: "detail-section",
+                        h3 { "Peer Card" }
+                        div { class: "card-tags",
+                            for tag in card {
+                                span { class: "card-tag", "{tag}" }
+                            }
+                        }
+                    }
+                }
+                if ctx.representation.is_none() && ctx.peer_card.is_none() {
+                    p { class: "muted", "No context data available" }
+                }
+            }
+        },
+    }
+}
+
+#[component]
+fn PeerSessionsTab(peer_id: String) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut sessions: Signal<Option<AppResult<Vec<SessionRow>>>> = use_signal(|| None);
+
+    let fetch = {
+        let peer_id = peer_id.clone();
+        move || {
+            let pid = peer_id.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::ListPeerSessions {
+                peer_id: pid,
+                reply: tx,
+            });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("list_peer_sessions"))
+                    .and_then(|r| r);
+                sessions.set(Some(result));
+            });
+        }
+    };
+
+    let fetch_for_retry = fetch.clone();
+    use_effect(move || {
+        fetch();
+    });
+
+    match &*sessions.read() {
+        None => rsx! {
+            LoadingView { label: "Loading peer sessions...".to_string() }
+        },
+        Some(Err(e)) => rsx! {
+            ErrorView {
+                code: e.code().to_string(),
+                message: e.user_message(),
+                retryable: e.is_retryable(),
+                on_retry: Some(EventHandler::new({
+                    let fetch_for_retry = fetch_for_retry.clone();
+                    move |_: MouseEvent| fetch_for_retry()
+                })),
+            }
+        },
+        Some(Ok(list)) => {
+            let list = list.clone();
+            rsx! {
+                div {
+                    if list.is_empty() {
+                        p { class: "muted", "No sessions found for this peer" }
+                    } else {
+                        for session in list {
+                            {rsx! {
+                                div {
+                                    key: "{session.id}",
+                                    class: "session-peer-row",
+                                    div { class: "session-peer-row-header",
+                                        span { class: "list-item-id", "{session.id}" }
+                                        span {
+                                            class: if session.is_active { "badge badge-active" } else { "badge badge-inactive" },
+                                            if session.is_active { "Active" } else { "Inactive" }
+                                        }
+                                    }
+                                    p { class: "muted", "{session.created_at}" }
+                                }
+                            }}
                         }
                     }
                 }

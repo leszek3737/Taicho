@@ -2,14 +2,15 @@ use tokio::sync::oneshot;
 
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
-    ConclusionRow, DomainPage, MessageRow, PeerDetails, PeerRow, SessionDetails, SessionRow,
-    SessionSummariesView, WorkspaceInfo,
+    ConclusionRow, DomainPage, MessageRow, PeerContextView, PeerDetails, PeerRow,
+    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
+    WorkspaceInfo,
 };
 use taicho::error::{AppError, AppResult};
 use taicho::persistence::ConnectionProfile;
 
 // Some Cmd variants are not yet wired to UI but are part of the actor protocol
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_lines)]
 pub enum Cmd {
     // --- Connection (M1) ---
     Connect {
@@ -58,6 +59,16 @@ pub enum Cmd {
         reply: oneshot::Sender<AppResult<String>>,
     },
 
+    // --- Peers completion (M2) ---
+    GetPeerContext {
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<PeerContextView>>,
+    },
+    ListPeerSessions {
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<Vec<SessionRow>>>,
+    },
+
     // --- Sessions (M3) ---
     ListSessions {
         page: u64,
@@ -88,6 +99,40 @@ pub enum Cmd {
     },
     DeleteSession {
         session_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+
+    // --- Sessions completion (M3) ---
+    GetSessionContext {
+        session_id: String,
+        reply: oneshot::Sender<AppResult<SessionContextView>>,
+    },
+
+    // --- Session Peers (M4) ---
+    ListSessionPeers {
+        session_id: String,
+        reply: oneshot::Sender<AppResult<Vec<SessionPeerRow>>>,
+    },
+    AddSessionPeer {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+    RemoveSessionPeer {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+    GetSessionPeerConfig {
+        session_id: String,
+        peer_id: String,
+        reply: oneshot::Sender<AppResult<SessionPeerRow>>,
+    },
+    SetSessionPeerConfig {
+        session_id: String,
+        peer_id: String,
+        observe_me: Option<bool>,
+        observe_others: Option<bool>,
         reply: oneshot::Sender<AppResult<()>>,
     },
 
@@ -157,6 +202,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
+    #[allow(clippy::too_many_lines)]
     pub fn reply_with_error(self, err: AppError) {
         match self {
             Self::Connect { reply, .. } => {
@@ -189,6 +235,12 @@ impl Cmd {
             Self::GetPeerRepresentation { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
+            Self::GetPeerContext { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::ListPeerSessions { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
             Self::ListSessions { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
@@ -208,6 +260,24 @@ impl Cmd {
                 let _ = reply.send(Err(err));
             }
             Self::DeleteSession { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::GetSessionContext { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::ListSessionPeers { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::AddSessionPeer { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::RemoveSessionPeer { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::GetSessionPeerConfig { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::SetSessionPeerConfig { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
             Self::ListMessages { reply, .. } => {
@@ -247,5 +317,119 @@ impl Cmd {
                 let _ = reply.send(Err(err));
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    macro_rules! assert_reply_err {
+        ($rx:expr, $msg:expr) => {{
+            let result = $rx.blocking_recv().expect("rx should receive");
+            assert!(result.is_err(), "expected Err, got Ok");
+            assert_eq!(result.unwrap_err().user_message(), $msg);
+        }};
+    }
+
+    #[test]
+    fn get_peer_context_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<PeerContextView>>();
+        Cmd::GetPeerContext {
+            peer_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn list_peer_sessions_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<Vec<SessionRow>>>();
+        Cmd::ListPeerSessions {
+            peer_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn get_session_context_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<SessionContextView>>();
+        Cmd::GetSessionContext {
+            session_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn list_session_peers_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<Vec<SessionPeerRow>>>();
+        Cmd::ListSessionPeers {
+            session_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn add_session_peer_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<()>>();
+        Cmd::AddSessionPeer {
+            session_id: String::new(),
+            peer_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn remove_session_peer_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<()>>();
+        Cmd::RemoveSessionPeer {
+            session_id: String::new(),
+            peer_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn get_session_peer_config_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<SessionPeerRow>>();
+        Cmd::GetSessionPeerConfig {
+            session_id: String::new(),
+            peer_id: String::new(),
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn set_session_peer_config_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<()>>();
+        Cmd::SetSessionPeerConfig {
+            session_id: String::new(),
+            peer_id: String::new(),
+            observe_me: None,
+            observe_others: None,
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
     }
 }

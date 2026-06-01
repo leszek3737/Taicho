@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
+use futures_util::future::join_all;
 use honcho_ai::Honcho;
 use tracing::{debug, error};
 
 use crate::actor::commands::Cmd;
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
-    ConclusionRow, DomainPage, MessageRow, PageInfo, PeerDetails, PeerRow, SessionDetails,
-    SessionRow, SessionSummariesView, SummaryKind, SummaryView,
+    ConclusionRow, DomainPage, MessageRow, PageInfo, PeerContextView, PeerDetails, PeerRow,
+    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
+    SummaryKind, SummaryView,
 };
 use taicho::error::AppResult;
 
@@ -34,7 +36,9 @@ pub async fn handle(client: &Honcho, cmd: Cmd) {
         | Cmd::SetPeerConfig { .. }
         | Cmd::GetPeerCard { .. }
         | Cmd::SetPeerCard { .. }
-        | Cmd::GetPeerRepresentation { .. }) => {
+        | Cmd::GetPeerRepresentation { .. }
+        | Cmd::GetPeerContext { .. }
+        | Cmd::ListPeerSessions { .. }) => {
             handle_peer_cmd(client, cmd).await;
         }
         cmd @ (Cmd::ListSessions { .. }
@@ -43,8 +47,16 @@ pub async fn handle(client: &Honcho, cmd: Cmd) {
         | Cmd::SetSessionConfig { .. }
         | Cmd::GetSessionSummaries { .. }
         | Cmd::CloneSession { .. }
-        | Cmd::DeleteSession { .. }) => {
+        | Cmd::DeleteSession { .. }
+        | Cmd::GetSessionContext { .. }) => {
             handle_session_cmd(client, cmd).await;
+        }
+        cmd @ (Cmd::ListSessionPeers { .. }
+        | Cmd::AddSessionPeer { .. }
+        | Cmd::RemoveSessionPeer { .. }
+        | Cmd::GetSessionPeerConfig { .. }
+        | Cmd::SetSessionPeerConfig { .. }) => {
+            handle_session_peer_cmd(client, cmd).await;
         }
         cmd @ (Cmd::ListMessages { .. }
         | Cmd::GetMessage { .. }
@@ -129,6 +141,18 @@ async fn handle_peer_cmd(client: &Honcho, cmd: Cmd) {
                 debug!("get_peer_representation reply receiver dropped");
             }
         }
+        Cmd::GetPeerContext { peer_id, reply } => {
+            let result = get_peer_context(client, &peer_id).await;
+            if reply.send(result).is_err() {
+                debug!("get_peer_context reply receiver dropped");
+            }
+        }
+        Cmd::ListPeerSessions { peer_id, reply } => {
+            let result = list_peer_sessions(client, &peer_id).await;
+            if reply.send(result).is_err() {
+                debug!("list_peer_sessions reply receiver dropped");
+            }
+        }
         other => {
             error!("unexpected command in handle_peer_cmd");
             drop(other);
@@ -188,9 +212,74 @@ async fn handle_session_cmd(client: &Honcho, cmd: Cmd) {
                 debug!("delete_session reply receiver dropped");
             }
         }
+        Cmd::GetSessionContext { session_id, reply } => {
+            let result = get_session_context(client, &session_id).await;
+            if reply.send(result).is_err() {
+                debug!("get_session_context reply receiver dropped");
+            }
+        }
         other => {
             // Routing in handle() prevents this; log if invariant is violated
             error!("unexpected command in handle_session_cmd");
+            drop(other);
+        }
+    }
+}
+
+async fn handle_session_peer_cmd(client: &Honcho, cmd: Cmd) {
+    match cmd {
+        Cmd::ListSessionPeers { session_id, reply } => {
+            let result = list_session_peers(client, &session_id).await;
+            if reply.send(result).is_err() {
+                debug!("list_session_peers reply receiver dropped");
+            }
+        }
+        Cmd::AddSessionPeer {
+            session_id,
+            peer_id,
+            reply,
+        } => {
+            let result = add_session_peer(client, &session_id, &peer_id).await;
+            if reply.send(result).is_err() {
+                debug!("add_session_peer reply receiver dropped");
+            }
+        }
+        Cmd::RemoveSessionPeer {
+            session_id,
+            peer_id,
+            reply,
+        } => {
+            let result = remove_session_peer(client, &session_id, &peer_id).await;
+            if reply.send(result).is_err() {
+                debug!("remove_session_peer reply receiver dropped");
+            }
+        }
+        Cmd::GetSessionPeerConfig {
+            session_id,
+            peer_id,
+            reply,
+        } => {
+            let result = get_session_peer_config(client, &session_id, &peer_id).await;
+            if reply.send(result).is_err() {
+                debug!("get_session_peer_config reply receiver dropped");
+            }
+        }
+        Cmd::SetSessionPeerConfig {
+            session_id,
+            peer_id,
+            observe_me,
+            observe_others,
+            reply,
+        } => {
+            let result =
+                set_session_peer_config(client, &session_id, &peer_id, observe_me, observe_others)
+                    .await;
+            if reply.send(result).is_err() {
+                debug!("set_session_peer_config reply receiver dropped");
+            }
+        }
+        other => {
+            error!("unexpected command in handle_session_peer_cmd");
             drop(other);
         }
     }
@@ -310,6 +399,28 @@ async fn set_peer_card(
 async fn get_peer_representation(client: &Honcho, peer_id: &str) -> AppResult<String> {
     let peer = client.peer(peer_id, None, None).await?;
     Ok(peer.representation().await?)
+}
+
+async fn get_peer_context(client: &Honcho, peer_id: &str) -> AppResult<PeerContextView> {
+    let peer = client.peer(peer_id, None, None).await?;
+    let ctx = peer.context().await?;
+    Ok(PeerContextView {
+        peer_id: ctx.peer_id,
+        target_id: Some(ctx.target_id),
+        representation: ctx.representation,
+        peer_card: ctx.peer_card,
+    })
+}
+
+async fn list_peer_sessions(client: &Honcho, peer_id: &str) -> AppResult<Vec<SessionRow>> {
+    let peer = client.peer(peer_id, None, None).await?;
+    let sdk_page = peer.sessions().await?;
+    let workspace_id = client.workspace_id().to_owned();
+    sdk_page
+        .raw_items()
+        .iter()
+        .map(|s| map_session_row(s, &workspace_id))
+        .collect::<AppResult<Vec<_>>>()
 }
 
 fn map_peer_row(p: &honcho_ai::types::peer::Peer, workspace_id: &str) -> PeerRow {
@@ -434,6 +545,89 @@ async fn clone_session(client: &Honcho, session_id: &str) -> AppResult<SessionRo
 async fn delete_session(client: &Honcho, session_id: &str) -> AppResult<()> {
     let session = client.session(session_id, None, None, None).await?;
     session.delete().await?;
+    Ok(())
+}
+
+async fn get_session_context(client: &Honcho, session_id: &str) -> AppResult<SessionContextView> {
+    let session = client.session(session_id, None, None, None).await?;
+    let ctx = session.context().await?;
+    Ok(SessionContextView {
+        id: ctx.id,
+        messages_count: ctx.messages.len(),
+        has_summary: ctx.summary.is_some(),
+        peer_representation: ctx.peer_representation,
+        peer_card: ctx.peer_card,
+    })
+}
+
+async fn list_session_peers(client: &Honcho, session_id: &str) -> AppResult<Vec<SessionPeerRow>> {
+    let session = client.session(session_id, None, None, None).await?;
+    let peers = session.peers().await?;
+    let configs = join_all(peers.iter().map(|p| {
+        let session = &session;
+        async move {
+            let cfg = session.get_peer_configuration(p.id()).await.ok();
+            (p.id().to_owned(), cfg)
+        }
+    }))
+    .await;
+    Ok(configs
+        .into_iter()
+        .map(|(id, cfg)| SessionPeerRow {
+            id,
+            observe_me: cfg.as_ref().and_then(|c| c.observe_me),
+            observe_others: cfg.as_ref().and_then(|c| c.observe_others),
+        })
+        .collect())
+}
+
+async fn add_session_peer(client: &Honcho, session_id: &str, peer_id: &str) -> AppResult<()> {
+    let session = client.session(session_id, None, None, None).await?;
+    session.add_peer(peer_id).await?;
+    Ok(())
+}
+
+async fn remove_session_peer(client: &Honcho, session_id: &str, peer_id: &str) -> AppResult<()> {
+    let session = client.session(session_id, None, None, None).await?;
+    session.remove_peers(&[peer_id.to_owned()]).await?;
+    Ok(())
+}
+
+async fn get_session_peer_config(
+    client: &Honcho,
+    session_id: &str,
+    peer_id: &str,
+) -> AppResult<SessionPeerRow> {
+    let session = client.session(session_id, None, None, None).await?;
+    let cfg = session.get_peer_configuration(peer_id).await?;
+    Ok(SessionPeerRow {
+        id: peer_id.to_owned(),
+        observe_me: cfg.observe_me,
+        observe_others: cfg.observe_others,
+    })
+}
+
+async fn set_session_peer_config(
+    client: &Honcho,
+    session_id: &str,
+    peer_id: &str,
+    observe_me: Option<bool>,
+    observe_others: Option<bool>,
+) -> AppResult<()> {
+    let session = client.session(session_id, None, None, None).await?;
+    // SessionPeerConfig is #[non_exhaustive] upstream, so direct struct
+    // construction is not possible from outside the defining crate. Round-trip
+    // through serde_json to build it.
+    let mut cfg_json = serde_json::Map::new();
+    if let Some(v) = observe_me {
+        cfg_json.insert("observe_me".to_owned(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = observe_others {
+        cfg_json.insert("observe_others".to_owned(), serde_json::Value::Bool(v));
+    }
+    let cfg: honcho_ai::types::session::SessionPeerConfig =
+        serde_json::from_value(serde_json::Value::Object(cfg_json))?;
+    session.set_peer_configuration(peer_id, &cfg).await?;
     Ok(())
 }
 

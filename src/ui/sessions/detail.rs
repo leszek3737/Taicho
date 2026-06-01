@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::actor::commands::Cmd;
 use crate::state::AppState;
-use taicho::domain::SessionDetails;
+use taicho::domain::{SessionContextView, SessionDetails, SessionPeerRow};
 use taicho::error::{AppError, AppResult};
 
 use super::super::common::json_viewer::JsonViewer;
@@ -15,6 +15,8 @@ enum DetailTab {
     Configuration,
     Summaries,
     Actions,
+    Peers,
+    Context,
 }
 
 #[component]
@@ -89,6 +91,8 @@ fn SessionDetailInner(session_id: String) -> Element {
                         TabButton { label: "Configuration", tab: DetailTab::Configuration, active_tab }
                         TabButton { label: "Summaries", tab: DetailTab::Summaries, active_tab }
                         TabButton { label: "Actions", tab: DetailTab::Actions, active_tab }
+                        TabButton { label: "Peers", tab: DetailTab::Peers, active_tab }
+                        TabButton { label: "Context", tab: DetailTab::Context, active_tab }
                     }
 
                     div { class: "tab-content",
@@ -114,11 +118,369 @@ fn SessionDetailInner(session_id: String) -> Element {
                             DetailTab::Actions => rsx! {
                                 ActionsTabContent { detail, confirm_delete }
                             },
+                            DetailTab::Peers => rsx! {
+                                SessionPeersTab { session_id: detail.id.clone() }
+                            },
+                            DetailTab::Context => rsx! {
+                                SessionContextTab { session_id: detail.id.clone() }
+                            },
                         }}
                     }
                 }
             }
         }
+    }
+}
+
+#[component]
+fn SessionPeersTab(session_id: String) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut state: AppState = use_context();
+    let mut peers: Signal<Option<AppResult<Vec<SessionPeerRow>>>> = use_signal(|| None);
+    let mut add_peer_id: Signal<String> = use_signal(String::new);
+    let confirm_remove: Signal<Option<String>> = use_signal(|| None);
+
+    let fetch_peers = {
+        let session_id = session_id.clone();
+        move || {
+            let sid = session_id.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::ListSessionPeers {
+                session_id: sid,
+                reply: tx,
+            });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("list_session_peers"))
+                    .and_then(|r| r);
+                peers.set(Some(result));
+            });
+        }
+    };
+
+    let fetch_for_effect = fetch_peers.clone();
+    let fetch_for_retry = fetch_peers.clone();
+    use_effect(move || {
+        fetch_for_effect();
+    });
+
+    match &*peers.read() {
+        None => rsx! {
+            LoadingView { label: "Loading session peers...".to_string() }
+        },
+        Some(Err(e)) => rsx! {
+            ErrorView {
+                code: e.code().to_string(),
+                message: e.user_message(),
+                retryable: e.is_retryable(),
+                on_retry: Some(EventHandler::new({
+                    let fetch_for_retry = fetch_for_retry.clone();
+                    move |_: MouseEvent| fetch_for_retry()
+                })),
+            }
+        },
+        Some(Ok(peer_list)) => {
+            let peer_list = peer_list.clone();
+            rsx! {
+                div {
+                    div { class: "field-group",
+                        input {
+                            r#type: "text",
+                            placeholder: "Peer ID to add",
+                            value: "{add_peer_id}",
+                            oninput: move |e| add_peer_id.set(e.value()),
+                        }
+                        button {
+                            class: "primary-button",
+                            disabled: add_peer_id.read().is_empty(),
+                            onclick: {
+                                let session_id = session_id.clone();
+                                let fetch = fetch_peers.clone();
+                                move |_| {
+                                    let pid = add_peer_id.read().clone();
+                                    if pid.is_empty() { return; }
+                                    let sid = session_id.clone();
+                                    let fetch = fetch.clone();
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    actor.send(Cmd::AddSessionPeer {
+                                        session_id: sid,
+                                        peer_id: pid.clone(),
+                                        reply: tx,
+                                    });
+                                    spawn(async move {
+                                        match rx.await {
+                                            Ok(Ok(())) => {
+                                                fetch();
+                                            }
+                                            Ok(Err(e)) => {
+                                                tracing::warn!("Add peer failed: {e}");
+                                                state.status_message.set(
+                                                    format!(
+                                                        "Failed to add peer: {}",
+                                                        e.user_message()
+                                                    ),
+                                                );
+                                            }
+                                            Err(_) => {
+                                                state.status_message.set(
+                                                    "Failed to add peer: channel closed"
+                                                        .to_string(),
+                                                );
+                                            }
+                                        }
+                                    });
+                                    add_peer_id.set(String::new());
+                                }
+                            },
+                            "Add Peer"
+                        }
+                    }
+
+                    if peer_list.is_empty() {
+                        p { class: "muted", "No peers in this session" }
+                    } else {
+                    for peer in peer_list {
+                        {rsx! {
+                            SessionPeerRowView {
+                                key: "{peer.id}",
+                                session_id: session_id.clone(),
+                                peer,
+                                confirm_remove,
+                                on_refresh: fetch_peers.clone(),
+                            }
+                        }}
+                    }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn SessionPeerRowView(
+    session_id: String,
+    peer: SessionPeerRow,
+    confirm_remove: Signal<Option<String>>,
+    on_refresh: EventHandler<()>,
+) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut observe_me: Signal<Option<bool>> = use_signal(|| peer.observe_me);
+    let mut observe_others: Signal<Option<bool>> = use_signal(|| peer.observe_others);
+    let is_confirming = confirm_remove.read().as_deref() == Some(&peer.id);
+    let mut state: AppState = use_context();
+
+    rsx! {
+        div { class: "session-peer-row",
+            div { class: "session-peer-row-header",
+                span { class: "list-item-id", "{peer.id}" }
+                div { class: "session-peer-toggles",
+                    label { class: "toggle-label",
+                        input {
+                            r#type: "checkbox",
+                            checked: observe_me.read().unwrap_or(false),
+                            onchange: {
+                                let session_id = session_id.clone();
+                                let peer_id = peer.id.clone();
+                                let current = *observe_me.read();
+                                move |_| {
+                                    let new_val = Some(!current.unwrap_or(false));
+                                    let old_val = current;
+                                    observe_me.set(new_val);
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    actor.send(Cmd::SetSessionPeerConfig {
+                                        session_id: session_id.clone(),
+                                        peer_id: peer_id.clone(),
+                                        observe_me: new_val,
+                                        observe_others: *observe_others.read(),
+                                        reply: tx,
+                                    });
+                                    spawn(async move {
+                                        match rx.await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                tracing::warn!("SetSessionPeerConfig failed: {e}");
+                                                observe_me.set(old_val);
+                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                observe_me.set(old_val);
+                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                        }
+                        "Observe me"
+                    }
+                    label { class: "toggle-label",
+                        input {
+                            r#type: "checkbox",
+                            checked: observe_others.read().unwrap_or(false),
+                            onchange: {
+                                let session_id = session_id.clone();
+                                let peer_id = peer.id.clone();
+                                let current = *observe_others.read();
+                                move |_| {
+                                    let new_val = Some(!current.unwrap_or(false));
+                                    let old_val = current;
+                                    observe_others.set(new_val);
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    actor.send(Cmd::SetSessionPeerConfig {
+                                        session_id: session_id.clone(),
+                                        peer_id: peer_id.clone(),
+                                        observe_me: *observe_me.read(),
+                                        observe_others: new_val,
+                                        reply: tx,
+                                    });
+                                    spawn(async move {
+                                        match rx.await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                tracing::warn!("SetSessionPeerConfig failed: {e}");
+                                                observe_others.set(old_val);
+                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                observe_others.set(old_val);
+                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                        }
+                        "Observe others"
+                    }
+                }
+                if is_confirming {
+                    span { class: "confirm-bar",
+                        "Remove?"
+                        button {
+                            class: "danger-button",
+                            onclick: {
+                                let session_id = session_id.clone();
+                                let peer_id = peer.id.clone();
+                                move |_| {
+                                    let sid = session_id.clone();
+                                    let pid = peer_id.clone();
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    actor.send(Cmd::RemoveSessionPeer {
+                                        session_id: sid,
+                                        peer_id: pid.clone(),
+                                        reply: tx,
+                                    });
+                                    let on_refresh = on_refresh;
+                                    spawn(async move {
+                                        match rx.await {
+                                            Ok(Ok(())) => {
+                                                on_refresh.call(());
+                                            }
+                                            Ok(Err(e)) => {
+                                                state.status_message.set(format!("Failed to remove peer: {}", e.user_message()));
+                                            }
+                                            Err(_) => {
+                                                state.status_message.set("Failed to remove peer: channel closed".to_string());
+                                            }
+                                        }
+                                    });
+                                    confirm_remove.set(None);
+                                }
+                            },
+                            "Yes"
+                        }
+                        button {
+                            class: "secondary-button",
+                            onclick: move |_| confirm_remove.set(None),
+                            "No"
+                        }
+                    }
+                } else {
+                    button {
+                        class: "danger-button",
+                        onclick: {
+                            let peer_id = peer.id.clone();
+                            move |_| confirm_remove.set(Some(peer_id.clone()))
+                        },
+                        "Remove"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn SessionContextTab(session_id: String) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let mut context: Signal<Option<AppResult<SessionContextView>>> = use_signal(|| None);
+
+    use_effect(move || {
+        let sid = session_id.clone();
+        context.set(None);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        actor.send(Cmd::GetSessionContext {
+            session_id: sid,
+            reply: tx,
+        });
+        spawn(async move {
+            let result = rx
+                .await
+                .map_err(|_| AppError::channel_closed("get_session_context"))
+                .and_then(|r| r);
+            context.set(Some(result));
+        });
+    });
+
+    match &*context.read() {
+        None => rsx! {
+            LoadingView { label: "Loading session context...".to_string() }
+        },
+        Some(Err(e)) => rsx! {
+            ErrorView {
+                code: e.code().to_string(),
+                message: e.user_message(),
+                retryable: e.is_retryable(),
+                on_retry: None,
+            }
+        },
+        Some(Ok(ctx)) => rsx! {
+            div {
+                div { class: "detail-section",
+                    h3 { "Session ID" }
+                    p { class: "list-item-id", "{ctx.id}" }
+                }
+                div { class: "detail-section",
+                    h3 { "Messages Count" }
+                    p { "{ctx.messages_count}" }
+                }
+                div { class: "detail-section",
+                    h3 { "Has Summary" }
+                    span {
+                        class: if ctx.has_summary { "badge badge-active" } else { "badge badge-inactive" },
+                        if ctx.has_summary { "Yes" } else { "No" }
+                    }
+                }
+                if let Some(repr) = &ctx.peer_representation {
+                    div { class: "detail-section",
+                        h3 { "Peer Representation" }
+                        pre { class: "representation-view", "{repr}" }
+                    }
+                }
+                if let Some(card) = &ctx.peer_card {
+                    div { class: "detail-section",
+                        h3 { "Peer Card" }
+                        div { class: "card-tags",
+                            for tag in card {
+                                span { class: "card-tag", "{tag}" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
     }
 }
 

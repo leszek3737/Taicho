@@ -10,7 +10,10 @@ pub use message::MessageRow;
 pub use page::{DomainPage, PageInfo};
 pub use peer::{PeerContextView, PeerDetails, PeerRow};
 pub use raw_json::{JsonMap, RawJson};
-pub use session::{SessionDetails, SessionRow, SessionSummariesView, SummaryKind, SummaryView};
+pub use session::{
+    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
+    SummaryKind, SummaryView,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceInfo {
