@@ -33,6 +33,14 @@ pub struct WindowState {
     pub y: i32,
 }
 
+impl WindowState {
+    /// Returns `true` if dimensions are positive, guarding against a 0×0 window
+    /// that can occur when deserializing an empty or partially-written JSON file.
+    pub fn is_valid(&self) -> bool {
+        self.width > 0 && self.height > 0
+    }
+}
+
 pub fn load_settings(paths: &AppPaths) -> AppResult<Settings> {
     match std::fs::read_to_string(&paths.settings_file) {
         Ok(data) => Ok(serde_json::from_str(&data)?),
@@ -63,10 +71,9 @@ fn atomic_write(path: &std::path::Path, value: &impl Serialize) -> AppResult<()>
     }
     let json = serde_json::to_string_pretty(value)?;
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
+    let write_result = std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path));
+    if write_result.is_err() {
         let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
     }
-    Ok(())
+    Ok(write_result?)
 }

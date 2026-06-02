@@ -1069,26 +1069,30 @@ async fn upload_to_multiple_peers(
     metadata: Option<JsonMap>,
 ) -> AppResult<Vec<(String, AppResult<MessageRow>)>> {
     let session = client.session(session_id, None, None, None).await?;
-    let mut results = Vec::with_capacity(peer_ids.len());
-    for pid in peer_ids {
-        let upload_result = async {
+    let futures = peer_ids.iter().map(|pid| {
+        let pid = pid.clone();
+        let md = metadata.clone();
+        let session = session.clone();
+        async move {
             let mut builder = session.upload_file(honcho_sdk_file_source(source));
-            builder = builder.peer(pid);
-            if let Some(ref md) = metadata {
-                let val = serde_json::Value::Object(md.clone());
+            builder = builder.peer(&pid);
+            if let Some(ref m) = md {
+                let val = serde_json::Value::Object(m.clone());
                 builder = builder.metadata(val);
             }
-            let msgs = builder.send().await?;
-            if let Some(m) = msgs.into_iter().next() {
-                Ok(map_message_row(&m))
-            } else {
-                Err(AppError::Validation("no message returned".to_owned()))
+            let upload_result = async {
+                let msgs = builder.send().await?;
+                if let Some(m) = msgs.into_iter().next() {
+                    Ok(map_message_row(&m))
+                } else {
+                    Err(AppError::Validation("no message returned".to_owned()))
+                }
             }
+            .await;
+            (pid, upload_result)
         }
-        .await;
-        results.push((pid.clone(), upload_result));
-    }
-    Ok(results)
+    });
+    Ok(join_all(futures).await)
 }
 
 fn honcho_sdk_file_source(src: &FileSource) -> honcho_ai::FileSource {

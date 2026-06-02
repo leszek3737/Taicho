@@ -22,7 +22,8 @@ fn log_dir_path() -> Option<PathBuf> {
 }
 
 fn find_latest_log(log_dir: &std::path::Path) -> Option<PathBuf> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(log_dir)
+    // Schwartzian transform: cache metadata before sorting to avoid O(N log N) disk I/O
+    let mut entries: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(log_dir)
         .ok()?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -31,17 +32,15 @@ fn find_latest_log(log_dir: &std::path::Path) -> Option<PathBuf> {
                 .and_then(|n| n.to_str())
                 .is_some_and(|name| name.starts_with("taicho.log"))
         })
+        .filter_map(|path| {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((path, modified))
+        })
         .collect();
 
-    entries.sort_by(|a, b| {
-        let meta_a = std::fs::metadata(a).ok();
-        let meta_b = std::fs::metadata(b).ok();
-        let time_a = meta_a.and_then(|m| m.modified().ok());
-        let time_b = meta_b.and_then(|m| m.modified().ok());
-        time_b.cmp(&time_a)
-    });
+    entries.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    entries.into_iter().next()
+    entries.into_iter().next().map(|(path, _)| path)
 }
 
 fn read_tail(path: &std::path::Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
@@ -59,17 +58,22 @@ async fn fetch_logs() -> LogsState {
         );
     };
 
-    if !log_dir.exists() {
-        return LogsState::Empty;
-    }
-
-    let Some(latest) = find_latest_log(&log_dir) else {
-        return LogsState::Empty;
-    };
-
-    match tokio::task::spawn_blocking(move || read_tail(&latest, TAIL_LINES)).await {
-        Ok(Ok(lines)) if lines.is_empty() => LogsState::Empty,
-        Ok(Ok(lines)) => LogsState::Loaded(lines),
+    // Run all filesystem I/O inside spawn_blocking to avoid stalling the async executor
+    match tokio::task::spawn_blocking(move || {
+        if !log_dir.exists() {
+            return Ok(None);
+        }
+        let latest = find_latest_log(&log_dir);
+        match latest {
+            None => Ok(None),
+            Some(path) => read_tail(&path, TAIL_LINES).map(Some),
+        }
+    })
+    .await
+    {
+        Ok(Ok(None)) => LogsState::Empty,
+        Ok(Ok(Some(lines))) if lines.is_empty() => LogsState::Empty,
+        Ok(Ok(Some(lines))) => LogsState::Loaded(lines),
         Ok(Err(e)) => LogsState::Error("io_error".to_string(), format!("Failed to read log: {e}")),
         Err(e) => LogsState::Error("task_error".to_string(), format!("Task join error: {e}")),
     }
@@ -94,6 +98,8 @@ pub fn LogsPanel() -> Element {
             refresh.call(());
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(REFRESH_INTERVAL_SECS));
+            // Skip the immediate first tick to avoid double-refresh at startup
+            interval.tick().await;
             loop {
                 interval.tick().await;
                 refresh.call(());
