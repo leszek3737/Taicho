@@ -49,6 +49,7 @@ async fn run_upload(
     let mut completed: Vec<MessageRow> = Vec::new();
     let mut failed: Option<AppError> = None;
     for (idx, path) in queued.into_iter().enumerate() {
+        let path_key = path.clone();
         let (tx, rx) = oneshot::channel();
         actor.send(Cmd::UploadFile {
             session_id: sid.clone(),
@@ -63,7 +64,10 @@ async fn run_upload(
             Err(_) => Err(AppError::channel_closed("upload_file")),
         };
         match result {
-            Ok(row) => completed.push(row),
+            Ok(row) => {
+                completed.push(row);
+                files_sig.write().retain(|p| p != &path_key);
+            }
             Err(e) => {
                 failed = Some(e);
                 break;

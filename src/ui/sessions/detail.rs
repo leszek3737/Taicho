@@ -621,7 +621,7 @@ fn MetadataTabContent(session_id: String, initial: JsonMap, on_saved: EventHandl
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let state: AppState = use_context();
     let session_id_for_save = session_id.clone();
-    let saving_metadata: Signal<bool> = use_signal(|| false);
+    let mut saving_metadata: Signal<bool> = use_signal(|| false);
 
     rsx! {
         JsonEditor {
@@ -629,12 +629,17 @@ fn MetadataTabContent(session_id: String, initial: JsonMap, on_saved: EventHandl
             label: "Metadata".to_string(),
             saving: *saving_metadata.read(),
             on_change: move |new_metadata: JsonMap| {
+                if *saving_metadata.read() {
+                    return;
+                }
+                saving_metadata.set(true);
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 actor.send(Cmd::SetSessionMetadata {
                     session_id: session_id_for_save.clone(),
                     metadata: new_metadata,
                     reply: tx,
                 });
+                let mut saving = saving_metadata;
                 spawn(async move {
                     match rx.await {
                         Ok(Ok(())) => {
@@ -651,6 +656,7 @@ fn MetadataTabContent(session_id: String, initial: JsonMap, on_saved: EventHandl
                             state.push_toast(ToastKind::Error, "Save cancelled");
                         }
                     }
+                    saving.set(false);
                 });
             },
             on_cancel: move |_| {},
@@ -667,7 +673,7 @@ fn ConfigurationTabContent(
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let state: AppState = use_context();
     let session_id_for_save = session_id.clone();
-    let saving_config: Signal<bool> = use_signal(|| false);
+    let mut saving_config: Signal<bool> = use_signal(|| false);
 
     rsx! {
         JsonEditor {
@@ -675,12 +681,17 @@ fn ConfigurationTabContent(
             label: "Configuration".to_string(),
             saving: *saving_config.read(),
             on_change: move |new_config: JsonMap| {
+                if *saving_config.read() {
+                    return;
+                }
+                saving_config.set(true);
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 actor.send(Cmd::SetSessionConfig {
                     session_id: session_id_for_save.clone(),
                     configuration: new_config,
                     reply: tx,
                 });
+                let mut saving = saving_config;
                 spawn(async move {
                     match rx.await {
                         Ok(Ok(())) => {
@@ -697,6 +708,7 @@ fn ConfigurationTabContent(
                             state.push_toast(ToastKind::Error, "Save cancelled");
                         }
                     }
+                    saving.set(false);
                 });
             },
             on_cancel: move |_| {},

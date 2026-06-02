@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::raw_json::RawJson;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SummaryKind {
     Short,
     Long,
@@ -126,6 +127,18 @@ mod tests {
             observe_others: Some(true),
         };
         assert_eq!(row.id, "peer-abc-123");
+    }
+
+    #[test]
+    fn summary_kind_lowercase_deserializes() {
+        let short: SummaryKind = serde_json::from_str("\"short\"").unwrap();
+        let long: SummaryKind = serde_json::from_str("\"long\"").unwrap();
+        let bogus: SummaryKind = serde_json::from_str("\"medium\"").unwrap();
+        assert_eq!(short, SummaryKind::Short);
+        assert_eq!(long, SummaryKind::Long);
+        assert_eq!(bogus, SummaryKind::Unknown);
+        assert_eq!(SummaryKind::from_str_lossy("short"), SummaryKind::Short);
+        assert_eq!(SummaryKind::from_str_lossy("long"), SummaryKind::Long);
     }
 
     #[test]

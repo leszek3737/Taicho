@@ -109,10 +109,20 @@ pub fn ChatPanel(peer_id: String) -> Element {
                             }
                         }
                         StreamEvent::Done(final_text) => {
-                            if !final_text.is_empty()
-                                && let Some(last) = history_for_spawn.write().last_mut()
-                            {
-                                last.content = final_text;
+                            if !final_text.is_empty() {
+                                if last_is_assistant {
+                                    if let Some(last) = history_for_spawn.write().last_mut() {
+                                        last.content = final_text;
+                                    }
+                                } else {
+                                    history_for_spawn.write().push(ChatMessage {
+                                        peer_id: peer_id_for_spawn.clone(),
+                                        content: final_text,
+                                        role: ChatRole::Assistant,
+                                        created_at: chrono::Utc::now().to_rfc3339(),
+                                        token_count: 0,
+                                    });
+                                }
                             }
                             break;
                         }

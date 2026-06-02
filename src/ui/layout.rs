@@ -125,20 +125,9 @@ fn InspectorShell() -> Element {
                     match selected_section {
                         InspectorSection::Peers => rsx! { super::peers::PeerDetail {} },
                         InspectorSection::Sessions => rsx! { super::sessions::SessionDetail {} },
-                        InspectorSection::Messages => {
-                            let selected_message = state.selection.message_id.read().clone();
-                            rsx! {
-                                h2 { "Message details" }
-                                if let Some(item_id) = selected_message {
-                                    p { "Selected: {item_id}" }
-                                } else {
-                                    EmptyView {
-                                        title: "Nothing selected".to_string(),
-                                        message: "Select a message from the middle pane.".to_string(),
-                                    }
-                                }
-                            }
-                        }
+                        InspectorSection::Messages => rsx! {
+                            super::messages::MessageDetail {}
+                        },
                         InspectorSection::Workspaces => {
                             rsx! {
                                 h2 { "Workspace" }

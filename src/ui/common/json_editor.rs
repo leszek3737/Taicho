@@ -14,9 +14,15 @@ pub fn JsonEditor(
     let mut editing_text: Signal<String> = use_signal(String::new);
     let mut editing: Signal<bool> = use_signal(|| false);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
+    let mut last_initial: Signal<Option<JsonMap>> = use_signal(|| None);
     use_effect(move || {
+        let current_initial = (*initial_signal.read()).clone();
+        if current_initial != *last_initial.read() {
+            last_initial.set(current_initial.clone());
+            editing.set(false);
+        }
         if !*editing.read() {
-            if let Some(initial) = initial_signal.read().as_ref() {
+            if let Some(initial) = current_initial.as_ref() {
                 let s = serde_json::to_string_pretty(&serde_json::Value::Object(initial.clone()))
                     .unwrap_or_else(|_| "{}".to_string());
                 editing_text.set(s);
@@ -79,7 +85,6 @@ pub fn JsonEditor(
                             match serde_json::from_str::<serde_json::Value>(&text) {
                                 Ok(serde_json::Value::Object(map)) => {
                                     on_change.call(map);
-                                    editing.set(false);
                                     error_msg.set(None);
                                 }
                                 Ok(_) => {

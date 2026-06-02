@@ -384,7 +384,7 @@ impl Cmd {
                 let _ = reply.send(Err(err));
             }
             Self::StreamChat { tx, .. } => {
-                let _ = tx.blocking_send(StreamEvent::Err(err));
+                let _ = tx.try_send(StreamEvent::Err(err));
             }
             Self::CreateConclusion { reply, .. } => {
                 let _ = reply.send(Err(err));

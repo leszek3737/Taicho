@@ -848,9 +848,12 @@ async fn handle_workspace_cmd(client: &Honcho, cmd: Cmd) {
                 let observer = observer_id.as_deref().ok_or_else(|| {
                     AppError::Validation("observer_id required for schedule_dream".to_owned())
                 })?;
-                client
-                    .schedule_dream(observer, Some(&session_id), None)
-                    .await?;
+                let session_opt = if session_id.is_empty() {
+                    None
+                } else {
+                    Some(session_id.as_str())
+                };
+                client.schedule_dream(observer, session_opt, None).await?;
                 Ok(())
             }
             .await;
@@ -959,7 +962,7 @@ async fn run_search(
 ) -> AppResult<Vec<MessageRow>> {
     let limit_val = limit.unwrap_or(25);
     let msgs = match scope {
-        SearchScope::Workspace => client.search(query, limit, None).await?,
+        SearchScope::Workspace => client.search(query, Some(limit_val), None).await?,
         SearchScope::Peer(pid) => {
             let peer = client.peer(pid, None, None).await?;
             let opts = MessageSearchOptions {
