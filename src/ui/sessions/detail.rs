@@ -1,11 +1,13 @@
 use dioxus::prelude::*;
 
 use crate::actor::commands::Cmd;
-use crate::state::AppState;
+use crate::state::{AppState, ToastKind};
+use taicho::domain::raw_json::JsonMap;
 use taicho::domain::{SessionContextView, SessionDetails, SessionPeerRow};
 use taicho::error::{AppError, AppResult};
 
-use super::super::common::json_viewer::JsonViewer;
+use super::super::common::confirm_modal::ConfirmModal;
+use super::super::common::json_editor::JsonEditor;
 use super::super::common::{EmptyView, ErrorView, LoadingView};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,10 +44,13 @@ fn SessionDetailInner(session_id: String) -> Element {
     let mut details: Signal<Option<AppResult<SessionDetails>>> = use_signal(|| None);
     let active_tab: Signal<DetailTab> = use_signal(|| DetailTab::Overview);
     let mut confirm_delete: Signal<bool> = use_signal(|| false);
+    let mut fetch_retry: Signal<u32> = use_signal(|| 0);
+    let session_id_for_refresh = session_id.clone();
 
     // Dioxus 0.7: spawned futures are cancelled on component unmount (drop of the scope).
     // No manual cancellation token needed — navigating away drops the rx automatically.
     use_effect(move || {
+        let _retry_token = *fetch_retry.read();
         let sid = session_id.clone();
         details.set(None);
         confirm_delete.set(false);
@@ -63,6 +68,26 @@ fn SessionDetailInner(session_id: String) -> Element {
         });
     });
 
+    let refresh_details = {
+        let session_id = session_id_for_refresh.clone();
+        let mut details = details;
+        move || {
+            let sid = session_id.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::GetSession {
+                session_id: sid,
+                reply: tx,
+            });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("get_session"))
+                    .and_then(|r| r);
+                details.set(Some(result));
+            });
+        }
+    };
+
     match &*details.read() {
         None => rsx! {
             LoadingView { label: "Loading session details...".to_string() }
@@ -72,7 +97,10 @@ fn SessionDetailInner(session_id: String) -> Element {
                 code: e.code().to_string(),
                 message: e.user_message(),
                 retryable: e.is_retryable(),
-                on_retry: None,
+                on_retry: Some(EventHandler::new(move |_: MouseEvent| {
+                    let next = *fetch_retry.read() + 1;
+                    fetch_retry.set(next);
+                })),
             }
         },
         Some(Ok(detail)) => {
@@ -101,15 +129,17 @@ fn SessionDetailInner(session_id: String) -> Element {
                                 OverviewTabContent { detail: detail.clone() }
                             },
                             DetailTab::Metadata => rsx! {
-                                JsonViewer {
-                                    value: serde_json::to_string_pretty(detail.metadata.value())
-                                        .unwrap_or_else(|e| format!("JSON error: {e}")),
+                                MetadataTabContent {
+                                    session_id: detail.id.clone(),
+                                    initial: detail.metadata.to_json_map().unwrap_or_default(),
+                                    on_saved: EventHandler::new(move |_: ()| refresh_details()),
                                 }
                             },
                             DetailTab::Configuration => rsx! {
-                                JsonViewer {
-                                    value: serde_json::to_string_pretty(detail.configuration.value())
-                                        .unwrap_or_else(|e| format!("JSON error: {e}")),
+                                ConfigurationTabContent {
+                                    session_id: detail.id.clone(),
+                                    initial: detail.configuration.to_json_map().unwrap_or_default(),
+                                    on_saved: EventHandler::new(move |_: ()| refresh_details()),
                                 }
                             },
                             DetailTab::Summaries => rsx! {
@@ -135,7 +165,7 @@ fn SessionDetailInner(session_id: String) -> Element {
 #[component]
 fn SessionPeersTab(session_id: String) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
-    let mut state: AppState = use_context();
+    let state: AppState = use_context();
     let mut peers: Signal<Option<AppResult<Vec<SessionPeerRow>>>> = use_signal(|| None);
     let mut add_peer_id: Signal<String> = use_signal(String::new);
     let confirm_remove: Signal<Option<String>> = use_signal(|| None);
@@ -215,7 +245,8 @@ fn SessionPeersTab(session_id: String) -> Element {
                                             }
                                             Ok(Err(e)) => {
                                                 tracing::warn!("Add peer failed: {e}");
-                                                state.status_message.set(
+                                                state.push_toast(
+                                                    ToastKind::Error,
                                                     format!(
                                                         "Failed to add peer: {}",
                                                         e.user_message()
@@ -223,9 +254,9 @@ fn SessionPeersTab(session_id: String) -> Element {
                                                 );
                                             }
                                             Err(_) => {
-                                                state.status_message.set(
-                                                    "Failed to add peer: channel closed"
-                                                        .to_string(),
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    "Failed to add peer: channel closed",
                                                 );
                                             }
                                         }
@@ -268,8 +299,9 @@ fn SessionPeerRowView(
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut observe_me: Signal<Option<bool>> = use_signal(|| peer.observe_me);
     let mut observe_others: Signal<Option<bool>> = use_signal(|| peer.observe_others);
+    let mut is_pending: Signal<bool> = use_signal(|| false);
     let is_confirming = confirm_remove.read().as_deref() == Some(&peer.id);
-    let mut state: AppState = use_context();
+    let state: AppState = use_context();
 
     rsx! {
         div { class: "session-peer-row",
@@ -280,14 +312,17 @@ fn SessionPeerRowView(
                         input {
                             r#type: "checkbox",
                             checked: observe_me.read().unwrap_or(false),
+                            disabled: *is_pending.read(),
                             onchange: {
                                 let session_id = session_id.clone();
                                 let peer_id = peer.id.clone();
-                                let current = *observe_me.read();
                                 move |_| {
+                                    if *is_pending.read() { return; }
+                                    let current = *observe_me.read();
                                     let new_val = Some(!current.unwrap_or(false));
                                     let old_val = current;
                                     observe_me.set(new_val);
+                                    is_pending.set(true);
                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                     actor.send(Cmd::SetSessionPeerConfig {
                                         session_id: session_id.clone(),
@@ -302,13 +337,20 @@ fn SessionPeerRowView(
                                             Ok(Err(e)) => {
                                                 tracing::warn!("SetSessionPeerConfig failed: {e}");
                                                 observe_me.set(old_val);
-                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    format!("Failed to update config: {}", e.user_message()),
+                                                );
                                             }
                                             Err(_) => {
                                                 observe_me.set(old_val);
-                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    "Failed to update config: channel closed",
+                                                );
                                             }
                                         }
+                                        is_pending.set(false);
                                     });
                                 }
                             },
@@ -319,14 +361,17 @@ fn SessionPeerRowView(
                         input {
                             r#type: "checkbox",
                             checked: observe_others.read().unwrap_or(false),
+                            disabled: *is_pending.read(),
                             onchange: {
                                 let session_id = session_id.clone();
                                 let peer_id = peer.id.clone();
-                                let current = *observe_others.read();
                                 move |_| {
+                                    if *is_pending.read() { return; }
+                                    let current = *observe_others.read();
                                     let new_val = Some(!current.unwrap_or(false));
                                     let old_val = current;
                                     observe_others.set(new_val);
+                                    is_pending.set(true);
                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                     actor.send(Cmd::SetSessionPeerConfig {
                                         session_id: session_id.clone(),
@@ -341,13 +386,20 @@ fn SessionPeerRowView(
                                             Ok(Err(e)) => {
                                                 tracing::warn!("SetSessionPeerConfig failed: {e}");
                                                 observe_others.set(old_val);
-                                                state.status_message.set(format!("Failed to update config: {}", e.user_message()));
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    format!("Failed to update config: {}", e.user_message()),
+                                                );
                                             }
                                             Err(_) => {
                                                 observe_others.set(old_val);
-                                                state.status_message.set("Failed to update config: channel closed".to_string());
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    "Failed to update config: channel closed",
+                                                );
                                             }
                                         }
+                                        is_pending.set(false);
                                     });
                                 }
                             },
@@ -379,10 +431,16 @@ fn SessionPeerRowView(
                                                 on_refresh.call(());
                                             }
                                             Ok(Err(e)) => {
-                                                state.status_message.set(format!("Failed to remove peer: {}", e.user_message()));
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    format!("Failed to remove peer: {}", e.user_message()),
+                                                );
                                             }
                                             Err(_) => {
-                                                state.status_message.set("Failed to remove peer: channel closed".to_string());
+                                                state.push_toast(
+                                                    ToastKind::Error,
+                                                    "Failed to remove peer: channel closed",
+                                                );
                                             }
                                         }
                                     });
@@ -416,8 +474,10 @@ fn SessionPeerRowView(
 fn SessionContextTab(session_id: String) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut context: Signal<Option<AppResult<SessionContextView>>> = use_signal(|| None);
+    let mut fetch_retry: Signal<u32> = use_signal(|| 0);
 
     use_effect(move || {
+        let _retry_token = *fetch_retry.read();
         let sid = session_id.clone();
         context.set(None);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -443,7 +503,10 @@ fn SessionContextTab(session_id: String) -> Element {
                 code: e.code().to_string(),
                 message: e.user_message(),
                 retryable: e.is_retryable(),
-                on_retry: None,
+                on_retry: Some(EventHandler::new(move |_: MouseEvent| {
+                    let next = *fetch_retry.read() + 1;
+                    fetch_retry.set(next);
+                })),
             }
         },
         Some(Ok(ctx)) => rsx! {
@@ -554,6 +617,94 @@ fn SummariesTabContent(detail: SessionDetails) -> Element {
 }
 
 #[component]
+fn MetadataTabContent(session_id: String, initial: JsonMap, on_saved: EventHandler<()>) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let state: AppState = use_context();
+    let session_id_for_save = session_id.clone();
+    let saving_metadata: Signal<bool> = use_signal(|| false);
+
+    rsx! {
+        JsonEditor {
+            initial: Some(initial),
+            label: "Metadata".to_string(),
+            saving: *saving_metadata.read(),
+            on_change: move |new_metadata: JsonMap| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                actor.send(Cmd::SetSessionMetadata {
+                    session_id: session_id_for_save.clone(),
+                    metadata: new_metadata,
+                    reply: tx,
+                });
+                spawn(async move {
+                    match rx.await {
+                        Ok(Ok(())) => {
+                            state.push_toast(ToastKind::Info, "Metadata saved");
+                            on_saved.call(());
+                        }
+                        Ok(Err(e)) => {
+                            state.push_toast(
+                                ToastKind::Error,
+                                format!("Save failed: {}", e.user_message()),
+                            );
+                        }
+                        Err(_) => {
+                            state.push_toast(ToastKind::Error, "Save cancelled");
+                        }
+                    }
+                });
+            },
+            on_cancel: move |_| {},
+        }
+    }
+}
+
+#[component]
+fn ConfigurationTabContent(
+    session_id: String,
+    initial: JsonMap,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
+    let state: AppState = use_context();
+    let session_id_for_save = session_id.clone();
+    let saving_config: Signal<bool> = use_signal(|| false);
+
+    rsx! {
+        JsonEditor {
+            initial: Some(initial),
+            label: "Configuration".to_string(),
+            saving: *saving_config.read(),
+            on_change: move |new_config: JsonMap| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                actor.send(Cmd::SetSessionConfig {
+                    session_id: session_id_for_save.clone(),
+                    configuration: new_config,
+                    reply: tx,
+                });
+                spawn(async move {
+                    match rx.await {
+                        Ok(Ok(())) => {
+                            state.push_toast(ToastKind::Info, "Configuration saved");
+                            on_saved.call(());
+                        }
+                        Ok(Err(e)) => {
+                            state.push_toast(
+                                ToastKind::Error,
+                                format!("Save failed: {}", e.user_message()),
+                            );
+                        }
+                        Err(_) => {
+                            state.push_toast(ToastKind::Error, "Save cancelled");
+                        }
+                    }
+                });
+            },
+            on_cancel: move |_| {},
+        }
+    }
+}
+
+#[component]
 fn ActionsTabContent(detail: SessionDetails, confirm_delete: Signal<bool>) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut state: AppState = use_context();
@@ -573,19 +724,22 @@ fn ActionsTabContent(detail: SessionDetails, confirm_delete: Signal<bool>) -> El
                         spawn(async move {
                             match rx.await {
                                 Ok(Ok(row)) => {
-                                    state.status_message.set(
+                                    state.push_toast(
+                                        ToastKind::Info,
                                         format!("Session cloned \u{2192} {}", row.id),
                                     );
                                     state.selection.session_id.set(Some(row.id));
                                 }
                                 Ok(Err(e)) => {
-                                    state.status_message.set(
+                                    state.push_toast(
+                                        ToastKind::Error,
                                         format!("Clone failed: {}", e.user_message()),
                                     );
                                 }
                                 Err(_) => {
-                                    state.status_message.set(
-                                        "Clone cancelled (channel closed)".to_string(),
+                                    state.push_toast(
+                                        ToastKind::Error,
+                                        "Clone cancelled (channel closed)",
                                     );
                                 }
                             }
@@ -596,48 +750,46 @@ fn ActionsTabContent(detail: SessionDetails, confirm_delete: Signal<bool>) -> El
             }
 
             if *confirm_delete.read() {
-                div { class: "confirm-bar",
-                    p { "Are you sure? This cannot be undone." }
-                    button {
-                        class: "danger-button",
-                        onclick: {
-                            let session_id = detail.id.clone();
-                            move |_| {
-                                let (tx, rx) = tokio::sync::oneshot::channel();
-                                actor.send(Cmd::DeleteSession {
-                                    session_id: session_id.clone(),
-                                    reply: tx,
-                                });
-                                spawn(async move {
-                                    match rx.await {
-                                        Ok(Ok(())) => {
-                                            state.selection.session_id.set(None);
-                                            state.status_message.set(
-                                                "Session deleted".to_string(),
-                                            );
-                                        }
-                                        Ok(Err(e)) => {
-                                            state.status_message.set(
-                                                format!("Delete failed: {}", e.user_message()),
-                                            );
-                                        }
-                                        Err(_) => {
-                                            state.status_message.set(
-                                                "Delete cancelled (channel closed)".to_string(),
-                                            );
-                                        }
+                ConfirmModal {
+                    title: "Delete Session".to_string(),
+                    message: "Are you sure? This cannot be undone.".to_string(),
+                    expected: detail.id.clone(),
+                    confirm_label: "Delete Session".to_string(),
+                    on_confirm: {
+                        let session_id = detail.id.clone();
+                        move |_| {
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                            actor.send(Cmd::DeleteSession {
+                                session_id: session_id.clone(),
+                                reply: tx,
+                            });
+                            spawn(async move {
+                                match rx.await {
+                                    Ok(Ok(())) => {
+                                        state.selection.session_id.set(None);
+                                        state.push_toast(
+                                            ToastKind::Info,
+                                            "Session deleted",
+                                        );
                                     }
-                                });
-                                confirm_delete.set(false);
-                            }
-                        },
-                        "Confirm"
-                    }
-                    button {
-                        class: "secondary-button",
-                        onclick: move |_| confirm_delete.set(false),
-                        "Cancel"
-                    }
+                                    Ok(Err(e)) => {
+                                        state.push_toast(
+                                            ToastKind::Error,
+                                            format!("Delete failed: {}", e.user_message()),
+                                        );
+                                    }
+                                    Err(_) => {
+                                        state.push_toast(
+                                            ToastKind::Error,
+                                            "Delete cancelled (channel closed)",
+                                        );
+                                    }
+                                }
+                            });
+                            confirm_delete.set(false);
+                        }
+                    },
+                    on_cancel: move |_| confirm_delete.set(false),
                 }
             } else {
                 button {

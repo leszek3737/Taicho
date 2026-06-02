@@ -29,12 +29,24 @@ impl SelectionState {
         self.peer_id.set(id);
         self.session_id.set(None);
         self.message_id.set(None);
+        self.conclusion_id.set(None);
     }
 
     #[allow(dead_code)]
     pub fn select_session(&mut self, id: Option<String>) {
         self.session_id.set(id);
         self.message_id.set(None);
+        self.conclusion_id.set(None);
+    }
+
+    #[allow(dead_code)]
+    pub fn select_message(&mut self, id: Option<String>) {
+        self.message_id.set(id);
+    }
+
+    #[allow(dead_code)]
+    pub fn select_conclusion(&mut self, id: Option<String>) {
+        self.conclusion_id.set(id);
     }
 
     pub fn clear(&mut self) {

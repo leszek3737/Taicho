@@ -17,6 +17,9 @@ pub fn App() -> Element {
     let selection = SelectionState::new(peer_id, session_id, message_id, conclusion_id);
     let status_message = use_signal(|| "Not connected".to_string());
     let workspace_info = use_signal(|| None::<taicho::domain::WorkspaceInfo>);
+    let toasts = use_signal(Vec::new);
+    let search_open = use_signal(|| false);
+    let chat_streaming = use_signal(|| false);
 
     let _actor = use_coroutine(actor::run_honcho_actor);
 
@@ -26,6 +29,9 @@ pub fn App() -> Element {
         selection,
         status_message,
         workspace_info,
+        chat_streaming,
+        toasts,
+        search_open,
     });
 
     rsx! {

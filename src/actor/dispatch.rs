@@ -2,16 +2,18 @@ use std::collections::HashMap;
 
 use futures_util::future::join_all;
 use honcho_ai::Honcho;
+use honcho_ai::types::message::MessageSearchOptions;
 use tracing::{debug, error};
 
-use crate::actor::commands::Cmd;
+use super::stream;
+use crate::actor::commands::{Cmd, StreamEvent};
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
-    ConclusionRow, DomainPage, MessageRow, PageInfo, PeerContextView, PeerDetails, PeerRow,
-    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
-    SummaryKind, SummaryView,
+    ConclusionRow, DomainPage, FileSource, MessageRow, PageInfo, PeerContextView, PeerDetails,
+    PeerRow, QueueStatus, SearchScope, SessionContextView, SessionDetails, SessionPeerRow,
+    SessionRow, SessionSummariesView, SummaryKind, SummaryView,
 };
-use taicho::error::AppResult;
+use taicho::error::{AppError, AppResult};
 
 /// Convert domain `JsonMap` to the `HashMap` expected by SDK methods.
 fn json_map_to_hash_map(map: &JsonMap) -> HashMap<String, serde_json::Value> {
@@ -38,7 +40,9 @@ pub async fn handle(client: &Honcho, cmd: Cmd) {
         | Cmd::SetPeerCard { .. }
         | Cmd::GetPeerRepresentation { .. }
         | Cmd::GetPeerContext { .. }
-        | Cmd::ListPeerSessions { .. }) => {
+        | Cmd::ListPeerSessions { .. }
+        | Cmd::Chat { .. }
+        | Cmd::StreamChat { .. }) => {
             handle_peer_cmd(client, cmd).await;
         }
         cmd @ (Cmd::ListSessions { .. }
@@ -68,13 +72,20 @@ pub async fn handle(client: &Honcho, cmd: Cmd) {
         | Cmd::GetWorkspaceMetadata { .. }
         | Cmd::SetWorkspaceMetadata { .. }
         | Cmd::GetWorkspaceConfig { .. }
-        | Cmd::SetWorkspaceConfig { .. }) => {
+        | Cmd::SetWorkspaceConfig { .. }
+        | Cmd::ScheduleDream { .. }
+        | Cmd::QueueStatus { .. }
+        | Cmd::Search { .. }) => {
             handle_workspace_cmd(client, cmd).await;
         }
         cmd @ (Cmd::ListConclusions { .. }
         | Cmd::QueryConclusions { .. }
-        | Cmd::DeleteConclusion { .. }) => {
+        | Cmd::DeleteConclusion { .. }
+        | Cmd::CreateConclusion { .. }) => {
             handle_conclusion_cmd(client, cmd).await;
+        }
+        Cmd::UploadFile { .. } => {
+            handle_upload_cmd(client, cmd).await;
         }
         cmd @ (Cmd::Connect { .. } | Cmd::Disconnect { .. }) => {
             error!("connect/disconnect should not reach dispatch handle");
@@ -153,9 +164,62 @@ async fn handle_peer_cmd(client: &Honcho, cmd: Cmd) {
                 debug!("list_peer_sessions reply receiver dropped");
             }
         }
+        Cmd::Chat {
+            peer_id,
+            query,
+            opts,
+            reply,
+        } => {
+            let result = peer_chat(client, &peer_id, &query, &opts).await;
+            if reply.send(result).is_err() {
+                debug!("chat reply receiver dropped");
+            }
+        }
+        Cmd::StreamChat {
+            peer_id,
+            query,
+            opts,
+            tx,
+        } => {
+            handle_stream_chat(client, &peer_id, &query, &opts, tx).await;
+        }
         other => {
             error!("unexpected command in handle_peer_cmd");
             drop(other);
+        }
+    }
+}
+
+async fn handle_stream_chat(
+    client: &Honcho,
+    peer_id: &str,
+    query: &str,
+    opts: &crate::actor::commands::ChatOpts,
+    tx: tokio::sync::mpsc::Sender<StreamEvent>,
+) {
+    let peer_result = client.peer(peer_id, None, None).await;
+    match peer_result {
+        Ok(peer) => {
+            let mut stream_builder = peer.chat_stream(query);
+            if let Some(ref sid) = opts.session_id {
+                stream_builder = stream_builder.session(sid.clone());
+            }
+            if let Some(ref target) = opts.peer_target {
+                stream_builder = stream_builder.target(target.clone());
+            }
+            match stream_builder.send().await {
+                Ok(stream) => {
+                    tokio::spawn(async move {
+                        stream::run_stream(stream, tx).await;
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(StreamEvent::Err(e.into())).await;
+                }
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(StreamEvent::Err(e.into())).await;
         }
     }
 }
@@ -421,6 +485,23 @@ async fn list_peer_sessions(client: &Honcho, peer_id: &str) -> AppResult<Vec<Ses
         .iter()
         .map(|s| map_session_row(s, &workspace_id))
         .collect::<AppResult<Vec<_>>>()
+}
+
+async fn peer_chat(
+    client: &Honcho,
+    peer_id: &str,
+    query: &str,
+    opts: &crate::actor::commands::ChatOpts,
+) -> AppResult<Option<String>> {
+    let peer = client.peer(peer_id, None, None).await?;
+    let d_opts = honcho_ai::types::dialectic::DialecticOptions::builder()
+        .query(query.to_owned())
+        .stream(false)
+        .maybe_target(opts.peer_target.clone())
+        .maybe_session_id(opts.session_id.clone())
+        .build();
+    d_opts.validate().map_err(AppError::from)?;
+    Ok(peer.chat_with_options(&d_opts).await?)
 }
 
 fn map_peer_row(p: &honcho_ai::types::peer::Peer, workspace_id: &str) -> PeerRow {
@@ -758,10 +839,83 @@ async fn handle_workspace_cmd(client: &Honcho, cmd: Cmd) {
                 debug!("set_workspace_config reply receiver dropped");
             }
         }
+        Cmd::ScheduleDream {
+            session_id,
+            observer_id,
+            reply,
+        } => {
+            let result = async {
+                let observer = observer_id.as_deref().ok_or_else(|| {
+                    AppError::Validation("observer_id required for schedule_dream".to_owned())
+                })?;
+                client
+                    .schedule_dream(observer, Some(&session_id), None)
+                    .await?;
+                Ok(())
+            }
+            .await;
+            if reply.send(result).is_err() {
+                debug!("schedule_dream reply receiver dropped");
+            }
+        }
+        Cmd::QueueStatus { observer_id, reply } => {
+            handle_queue_status(client, observer_id, reply).await;
+        }
+        Cmd::Search {
+            scope,
+            query,
+            limit,
+            reply,
+        } => {
+            handle_search(client, scope, &query, limit, reply).await;
+        }
         other => {
             // Routing in handle() prevents this; log if invariant is violated
             error!("unexpected command in handle_workspace_cmd");
             drop(other);
+        }
+    }
+}
+
+async fn handle_search(
+    client: &Honcho,
+    scope: SearchScope,
+    query: &str,
+    limit: Option<u32>,
+    reply: tokio::sync::oneshot::Sender<AppResult<Vec<MessageRow>>>,
+) {
+    let result = run_search(client, &scope, query, limit).await;
+    if reply.send(result).is_err() {
+        debug!("search reply receiver dropped");
+    }
+}
+
+async fn handle_queue_status(
+    client: &Honcho,
+    observer_id: Option<String>,
+    reply: tokio::sync::oneshot::Sender<AppResult<QueueStatus>>,
+) {
+    let result = client
+        .queue_status(observer_id.as_deref(), None, None)
+        .await;
+    match result {
+        Ok(status) => {
+            let session_count = status.sessions.as_ref().map_or(0, |s| s.len() as u64);
+            let qs = QueueStatus {
+                pending: status.pending_work_units,
+                running: status.in_progress_work_units,
+                completed: status.completed_work_units,
+                sessions: session_count,
+                last_updated: Some(chrono::Utc::now()),
+            };
+            if reply.send(Ok(qs)).is_err() {
+                debug!("queue_status reply receiver dropped");
+            }
+        }
+        Err(e) => {
+            if reply.send(Err(e.into())).is_err() {
+                debug!("queue_status reply receiver dropped");
+            }
         }
     }
 }
@@ -795,6 +949,80 @@ async fn set_workspace_config(client: &Honcho, configuration: &JsonMap) -> AppRe
         .set_configuration_raw(json_map_to_hash_map(configuration))
         .await?;
     Ok(())
+}
+
+async fn run_search(
+    client: &Honcho,
+    scope: &SearchScope,
+    query: &str,
+    limit: Option<u32>,
+) -> AppResult<Vec<MessageRow>> {
+    let limit_val = limit.unwrap_or(25);
+    let msgs = match scope {
+        SearchScope::Workspace => client.search(query, limit, None).await?,
+        SearchScope::Peer(pid) => {
+            let peer = client.peer(pid, None, None).await?;
+            let opts = MessageSearchOptions {
+                query: query.to_owned(),
+                filters: None,
+                limit: limit_val,
+            };
+            peer.search_with_options(&opts).await?
+        }
+        SearchScope::Session(sid) => {
+            let session = client.session(sid, None, None, None).await?;
+            let opts = MessageSearchOptions {
+                query: query.to_owned(),
+                filters: None,
+                limit: limit_val,
+            };
+            session.search_with_options(&opts).await?
+        }
+    };
+    Ok(msgs.iter().map(map_message_row).collect())
+}
+
+async fn handle_upload_cmd(client: &Honcho, cmd: Cmd) {
+    match cmd {
+        Cmd::UploadFile {
+            session_id,
+            peer_id,
+            source,
+            metadata,
+            reply,
+        } => {
+            let result = async {
+                let session = client.session(&session_id, None, None, None).await?;
+                let mut builder = session.upload_file(honcho_sdk_file_source(&source));
+                builder = builder.peer(&peer_id);
+                if let Some(md) = metadata {
+                    let val = serde_json::Value::Object(md);
+                    builder = builder.metadata(val);
+                }
+                let msgs = builder.send().await?;
+                if let Some(m) = msgs.into_iter().next() {
+                    Ok(map_message_row(&m))
+                } else {
+                    Err(AppError::Validation("no message returned".to_owned()))
+                }
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        other => {
+            error!("unexpected command in handle_upload_cmd");
+            drop(other);
+        }
+    }
+}
+
+fn honcho_sdk_file_source(src: &FileSource) -> honcho_ai::FileSource {
+    match src {
+        FileSource::Path(p) => honcho_ai::FileSource::path(p.clone()),
+        FileSource::Bytes { name, mime, data } => {
+            honcho_ai::FileSource::bytes(name.clone(), data.clone(), mime.clone())
+        }
+    }
 }
 
 // ── Conclusions (M4) ─────────────────────────────────────────────────────
@@ -835,6 +1063,17 @@ async fn handle_conclusion_cmd(client: &Honcho, cmd: Cmd) {
                 delete_conclusion(client, &conclusion_id, &observer_id, &observed_id).await;
             if reply.send(result).is_err() {
                 debug!("delete_conclusion reply receiver dropped");
+            }
+        }
+        Cmd::CreateConclusion {
+            peer_id,
+            observed_id,
+            input,
+            reply,
+        } => {
+            let result = create_conclusion(client, &peer_id, observed_id.as_deref(), &input).await;
+            if reply.send(result).is_err() {
+                debug!("create_conclusion reply receiver dropped");
             }
         }
         other => {
@@ -933,4 +1172,24 @@ async fn delete_conclusion(
     };
     scope.delete(conclusion_id).await?;
     Ok(())
+}
+
+async fn create_conclusion(
+    client: &Honcho,
+    peer_id: &str,
+    observed_id: Option<&str>,
+    input: &taicho::domain::ConclusionInput,
+) -> AppResult<ConclusionRow> {
+    let peer = client.peer(peer_id, None, None).await?;
+    let scope = match observed_id {
+        Some(observed) if observed != peer_id => peer.conclusions_of(observed),
+        _ => peer.conclusions(),
+    };
+    let params = honcho_ai::ConclusionCreateParams::new(&input.content);
+    let created = scope.create([params]).await?;
+    if let Some(c) = created.into_iter().next() {
+        Ok(map_conclusion_from_wrapper(&c))
+    } else {
+        Err(AppError::Validation("no conclusion returned".to_owned()))
+    }
 }

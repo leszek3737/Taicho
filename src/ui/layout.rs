@@ -8,6 +8,8 @@ use crate::state::connection::ConnectionState;
 use crate::state::selection::InspectorSection;
 
 use super::common::EmptyView;
+use super::common::toast::ToastContainer;
+use super::search::palette::CommandPalette;
 
 #[component]
 pub fn RootShell() -> Element {
@@ -35,8 +37,15 @@ fn InspectorShell() -> Element {
 
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
 
+    let search_open = *state.search_open.read();
+
     rsx! {
-        div { class: "app-shell",
+        super::shortcuts::KeyboardShortcuts {
+            if search_open {
+                CommandPalette {}
+            }
+            ToastContainer {}
+            div { class: "app-shell",
             header { class: "top-bar",
                 div {
                     strong { "Taicho" }
@@ -103,15 +112,12 @@ fn InspectorShell() -> Element {
                         InspectorSection::Messages => rsx! { super::messages::MessageList {} },
                         InspectorSection::Workspaces => rsx! { super::workspaces::WorkspaceView {} },
                         InspectorSection::Conclusions => rsx! { super::conclusions::ConclusionList {} },
-                        _ => {
-                            rsx! {
-                                h2 { "{selected_section.label()}" }
-                                EmptyView {
-                                    title: "No data loaded".to_string(),
-                                    message: "Browse data from the connected Honcho server.".to_string(),
-                                }
+                        InspectorSection::RawJson => rsx! {
+                            div { class: "panel-content",
+                                h3 { "Raw JSON" }
+                                p { "Select an item to view its raw JSON metadata." }
                             }
-                        }
+                        },
                     }
                 }
 
@@ -172,6 +178,7 @@ fn InspectorShell() -> Element {
             footer { class: "status-bar",
                 span { "{status}" }
             }
+        }
         }
     }
 }

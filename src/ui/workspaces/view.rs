@@ -72,6 +72,54 @@ pub fn WorkspaceView() -> Element {
         }
     };
 
+    let retry_metadata = {
+        let mut metadata = metadata;
+        move |_: MouseEvent| {
+            metadata.set(None);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::GetWorkspaceMetadata { reply: tx });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("get_workspace_metadata"))
+                    .and_then(|r| r);
+                metadata.set(Some(result));
+            });
+        }
+    };
+
+    let retry_config = {
+        let mut config = config;
+        move |_: MouseEvent| {
+            config.set(None);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::GetWorkspaceConfig { reply: tx });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("get_workspace_config"))
+                    .and_then(|r| r);
+                config.set(Some(result));
+            });
+        }
+    };
+
+    let retry_ids = {
+        let mut workspace_ids = workspace_ids;
+        move |_: MouseEvent| {
+            workspace_ids.set(None);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::ListWorkspaces { reply: tx });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("list_workspaces"))
+                    .and_then(|r| r);
+                workspace_ids.set(Some(result));
+            });
+        }
+    };
+
     use_effect(move || {
         fetch_metadata();
         fetch_config();
@@ -128,7 +176,7 @@ pub fn WorkspaceView() -> Element {
                                     code: e.code().to_string(),
                                     message: e.user_message(),
                                     retryable: e.is_retryable(),
-                                    on_retry: None,
+                                    on_retry: Some(EventHandler::new(retry_metadata)),
                                 }
                             },
                             Some(Ok(raw)) => rsx! {
@@ -145,7 +193,7 @@ pub fn WorkspaceView() -> Element {
                                     code: e.code().to_string(),
                                     message: e.user_message(),
                                     retryable: e.is_retryable(),
-                                    on_retry: None,
+                                    on_retry: Some(EventHandler::new(retry_config)),
                                 }
                             },
                             Some(Ok(raw)) => rsx! {
@@ -162,7 +210,7 @@ pub fn WorkspaceView() -> Element {
                                     code: e.code().to_string(),
                                     message: e.user_message(),
                                     retryable: e.is_retryable(),
-                                    on_retry: None,
+                                    on_retry: Some(EventHandler::new(retry_ids)),
                                 }
                             },
                             Some(Ok(ids)) if ids.is_empty() => rsx! {
@@ -220,6 +268,7 @@ pub fn WorkspaceView() -> Element {
                                                 state.selection.clear();
                                                 state.selected_section.set(InspectorSection::default());
                                                 state.status_message.set("Workspace deleted".to_string());
+                                                delete_status.set(None);
                                             }
                                             Ok(Err(e)) => {
                                                 delete_status.set(Some(format!("Delete failed: {}", e.user_message())));
@@ -238,6 +287,7 @@ pub fn WorkspaceView() -> Element {
                             onclick: move |_| {
                                 show_delete_confirm.set(false);
                                 confirm_input.set(String::new());
+                                delete_status.set(None);
                             },
                             "Cancel"
                         }

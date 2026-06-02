@@ -6,16 +6,14 @@ use super::raw_json::RawJson;
 pub enum SummaryKind {
     Short,
     Long,
+    #[serde(other)]
     Unknown,
 }
 
 impl SummaryKind {
     pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "short" => Self::Short,
-            "long" => Self::Long,
-            _ => Self::Unknown,
-        }
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .unwrap_or(SummaryKind::Unknown)
     }
 
     pub fn as_str(&self) -> &'static str {

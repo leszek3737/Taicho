@@ -40,20 +40,18 @@ fn PeerDetailInner(peer_id: String) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut details: Signal<Option<AppResult<PeerDetails>>> = use_signal(|| None);
     let active_tab: Signal<DetailTab> = use_signal(|| DetailTab::Metadata);
+    let fetch_retry: Signal<u32> = use_signal(|| 0);
 
+    let peer_id_for_effect = peer_id.clone();
     use_effect(move || {
-        let pid = peer_id.clone();
+        let pid = peer_id_for_effect.clone();
+        let _v = *fetch_retry.read();
         details.set(None);
         let (tx, rx) = tokio::sync::oneshot::channel();
         actor.send(Cmd::GetPeer {
             peer_id: pid,
             reply: tx,
         });
-        // NOTE: In Dioxus 0.7, setting a signal on an unmounted component emits a
-        // runtime warning but does not crash. True cancellation would require
-        // `use_resource`, which re-fires on signal deps but cannot accept external
-        // params like `peer_id` prop without extra wrapping. Keeping spawn is the
-        // pragmatic choice here.
         spawn(async move {
             let result = rx
                 .await
@@ -72,7 +70,13 @@ fn PeerDetailInner(peer_id: String) -> Element {
                 code: e.code().to_string(),
                 message: e.user_message(),
                 retryable: e.is_retryable(),
-                on_retry: None,
+                on_retry: Some(EventHandler::new({
+                    let mut r = fetch_retry;
+                    move |_: MouseEvent| {
+                        let v = *r.read();
+                        r.set(v + 1);
+                    }
+                })),
             }
         },
         Some(Ok(detail)) => {
@@ -153,7 +157,7 @@ fn CardTabContent(detail: PeerDetails) -> Element {
                 }
             }
         },
-        Some(_) | None => rsx! {
+        _ => rsx! {
             p { class: "muted", "No card set" }
         },
     }
@@ -163,8 +167,43 @@ fn CardTabContent(detail: PeerDetails) -> Element {
 fn RepresentationTabContent(peer_id: String, representation: Option<String>) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut generated: Signal<Option<String>> = use_signal(|| None);
-    let mut gen_error: Signal<Option<(String, String)>> = use_signal(|| None);
+    let mut gen_error: Signal<Option<(String, String, bool)>> = use_signal(|| None);
     let mut generating: Signal<bool> = use_signal(|| false);
+
+    let trigger = {
+        move || {
+            generating.set(true);
+            gen_error.set(None);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::GetPeerRepresentation {
+                peer_id: peer_id.clone(),
+                reply: tx,
+            });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("get_peer_representation"))
+                    .and_then(|r| r);
+                match result {
+                    Ok(text) => {
+                        generated.set(Some(text));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to generate representation: {e}");
+                        gen_error.set(Some((
+                            e.code().to_string(),
+                            e.user_message(),
+                            e.is_retryable(),
+                        )));
+                    }
+                }
+                generating.set(false);
+            });
+        }
+    };
+
+    let mut trigger_for_onclick = trigger.clone();
+    let trigger_for_retry = trigger.clone();
 
     match &representation {
         Some(text) => rsx! {
@@ -183,37 +222,7 @@ fn RepresentationTabContent(peer_id: String, representation: Option<String>) -> 
                     } else {
                         button {
                             class: "primary-button",
-                            onclick: {
-                                let peer_id = peer_id.clone();
-                                move |_| {
-                                    generating.set(true);
-                                    gen_error.set(None);
-                                    let (tx, rx) = tokio::sync::oneshot::channel();
-                                    actor.send(Cmd::GetPeerRepresentation {
-                                        peer_id: peer_id.clone(),
-                                        reply: tx,
-                                    });
-                                    spawn(async move {
-                                        let result = rx
-                                            .await
-                                            .map_err(|_| AppError::channel_closed("get_peer_representation"))
-                                            .and_then(|r| r);
-                                        match result {
-                                            Ok(text) => {
-                                                generated.set(Some(text));
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!("Failed to generate representation: {e}");
-                                                gen_error.set(Some((
-                                                    e.code().to_string(),
-                                                    e.user_message(),
-                                                )));
-                                            }
-                                        }
-                                        generating.set(false);
-                                    });
-                                }
-                            },
+                            onclick: move |_| trigger_for_onclick(),
                             "Generate"
                         }
                     }
@@ -222,12 +231,15 @@ fn RepresentationTabContent(peer_id: String, representation: Option<String>) -> 
                         pre { class: "representation-view", "{text}" }
                     }
 
-                    if let Some((code, message)) = &gen_err {
+                    if let Some((code, message, retryable)) = &gen_err {
                         ErrorView {
                             code: code.clone(),
                             message: message.clone(),
-                            retryable: false,
-                            on_retry: None,
+                            retryable: *retryable,
+                            on_retry: Some(EventHandler::new({
+                                let mut trigger = trigger_for_retry.clone();
+                                move |_: MouseEvent| trigger()
+                            })),
                         }
                     }
                 }
@@ -241,21 +253,28 @@ fn PeerContextTab(peer_id: String) -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut context: Signal<Option<AppResult<PeerContextView>>> = use_signal(|| None);
 
+    let mut fetch = {
+        move || {
+            let pid = peer_id.clone();
+            context.set(None);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            actor.send(Cmd::GetPeerContext {
+                peer_id: pid,
+                reply: tx,
+            });
+            spawn(async move {
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("get_peer_context"))
+                    .and_then(|r| r);
+                context.set(Some(result));
+            });
+        }
+    };
+
+    let fetch_for_retry = fetch.clone();
     use_effect(move || {
-        let pid = peer_id.clone();
-        context.set(None);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        actor.send(Cmd::GetPeerContext {
-            peer_id: pid,
-            reply: tx,
-        });
-        spawn(async move {
-            let result = rx
-                .await
-                .map_err(|_| AppError::channel_closed("get_peer_context"))
-                .and_then(|r| r);
-            context.set(Some(result));
-        });
+        fetch();
     });
 
     match &*context.read() {
@@ -267,7 +286,10 @@ fn PeerContextTab(peer_id: String) -> Element {
                 code: e.code().to_string(),
                 message: e.user_message(),
                 retryable: e.is_retryable(),
-                on_retry: None,
+                on_retry: Some(EventHandler::new({
+                    let mut fetch_for_retry = fetch_for_retry.clone();
+                    move |_: MouseEvent| fetch_for_retry()
+                })),
             }
         },
         Some(Ok(ctx)) => rsx! {
