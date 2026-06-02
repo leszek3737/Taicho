@@ -1,4 +1,11 @@
+use super::raw_json::JsonMap;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConclusionInput {
+    pub content: String,
+    pub metadata: Option<JsonMap>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConclusionRow {

@@ -9,8 +9,10 @@ license = "MIT"
 repository = "https://github.com/leszek3737/Taicho"
 
 [dependencies]
-dioxus = { version = "0.7", features = ["desktop"] }
-honcho-ai = { version = "0.1", features = ["rustls-tls", "tracing"] }
+# Pin exact versions — both crates are breaking-change risks (BLUEPRINT §18).
+# Bump only after reviewing the upstream CHANGELOG and updating dispatch.rs if needed.
+dioxus = { version = "=0.7.9", features = ["desktop"] }
+honcho-ai = { version = "=0.1.6", features = ["rustls-tls", "tracing"] }
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -24,8 +26,10 @@ directories = "6"
 keyring-core = "1"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 pulldown-cmark = "0.13"
+rfd = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+ammonia = "4.1.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1"

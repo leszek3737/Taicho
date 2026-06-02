@@ -1,6 +1,8 @@
+pub mod confirm_modal;
+pub mod json_editor;
 pub mod json_viewer;
-
 pub mod pagination;
+pub mod toast;
 
 use dioxus::prelude::*;
 

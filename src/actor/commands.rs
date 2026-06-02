@@ -1,10 +1,11 @@
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
-    ConclusionRow, DomainPage, MessageRow, PeerContextView, PeerDetails, PeerRow,
-    SessionContextView, SessionDetails, SessionPeerRow, SessionRow, SessionSummariesView,
-    WorkspaceInfo,
+    ConclusionInput, ConclusionRow, DomainPage, FileSource, MessageRow, PeerContextView,
+    PeerDetails, PeerRow, QueueStatus, SearchScope, SessionContextView, SessionDetails,
+    SessionPeerRow, SessionRow, SessionSummariesView, WorkspaceInfo,
 };
 use taicho::error::{AppError, AppResult};
 use taicho::persistence::ConnectionProfile;
@@ -199,6 +200,69 @@ pub enum Cmd {
         observed_id: String,
         reply: oneshot::Sender<AppResult<()>>,
     },
+
+    // --- Chat (M5) ---
+    Chat {
+        peer_id: String,
+        query: String,
+        opts: ChatOpts,
+        reply: oneshot::Sender<AppResult<Option<String>>>,
+    },
+    StreamChat {
+        peer_id: String,
+        query: String,
+        opts: ChatOpts,
+        tx: mpsc::Sender<StreamEvent>,
+    },
+
+    // --- Conclusions (M6) ---
+    CreateConclusion {
+        peer_id: String,
+        observed_id: Option<String>,
+        input: ConclusionInput,
+        reply: oneshot::Sender<AppResult<ConclusionRow>>,
+    },
+
+    // --- Upload (M7) ---
+    UploadFile {
+        session_id: String,
+        peer_id: String,
+        source: FileSource,
+        metadata: Option<JsonMap>,
+        reply: oneshot::Sender<AppResult<MessageRow>>,
+    },
+
+    // --- Dreams (M8) ---
+    ScheduleDream {
+        session_id: String,
+        observer_id: Option<String>,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
+    QueueStatus {
+        observer_id: Option<String>,
+        reply: oneshot::Sender<AppResult<QueueStatus>>,
+    },
+
+    // --- Search (M9) ---
+    Search {
+        scope: SearchScope,
+        query: String,
+        limit: Option<u32>,
+        reply: oneshot::Sender<AppResult<Vec<MessageRow>>>,
+    },
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ChatOpts {
+    pub session_id: Option<String>,
+    pub peer_target: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum StreamEvent {
+    Chunk(String),
+    Done(String),
+    Err(AppError),
 }
 
 impl Cmd {
@@ -316,6 +380,27 @@ impl Cmd {
             Self::DeleteConclusion { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
+            Self::Chat { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::StreamChat { tx, .. } => {
+                let _ = tx.try_send(StreamEvent::Err(err));
+            }
+            Self::CreateConclusion { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::UploadFile { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::ScheduleDream { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::QueueStatus { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::Search { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
         }
     }
 }
@@ -329,7 +414,6 @@ impl Cmd {
 )]
 mod tests {
     use super::*;
-    use tokio::sync::oneshot;
 
     macro_rules! assert_reply_err {
         ($rx:expr, $msg:expr) => {{
