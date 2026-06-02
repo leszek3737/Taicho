@@ -4,11 +4,14 @@ use tokio::sync::oneshot;
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
     ConclusionInput, ConclusionRow, DomainPage, FileSource, MessageRow, PeerContextView,
-    PeerDetails, PeerRow, QueueStatus, SearchScope, SessionContextView, SessionDetails,
+    PeerDetails, PeerRow, QueueStatus, ReprOpts, SearchScope, SessionContextView, SessionDetails,
     SessionPeerRow, SessionRow, SessionSummariesView, WorkspaceInfo,
 };
 use taicho::error::{AppError, AppResult};
 use taicho::persistence::ConnectionProfile;
+
+/// Result of uploading a file to multiple peers: `(peer_id, per-peer result)`.
+pub type MultiPeerUploadResult = Vec<(String, AppResult<MessageRow>)>;
 
 // Some Cmd variants are not yet wired to UI but are part of the actor protocol
 #[allow(dead_code, clippy::too_many_lines)]
@@ -57,6 +60,7 @@ pub enum Cmd {
     },
     GetPeerRepresentation {
         peer_id: String,
+        opts: ReprOpts,
         reply: oneshot::Sender<AppResult<String>>,
     },
 
@@ -222,6 +226,11 @@ pub enum Cmd {
         input: ConclusionInput,
         reply: oneshot::Sender<AppResult<ConclusionRow>>,
     },
+    GetConclusionRepresentation {
+        observer_id: String,
+        observed_id: String,
+        reply: oneshot::Sender<AppResult<String>>,
+    },
 
     // --- Upload (M7) ---
     UploadFile {
@@ -230,6 +239,13 @@ pub enum Cmd {
         source: FileSource,
         metadata: Option<JsonMap>,
         reply: oneshot::Sender<AppResult<MessageRow>>,
+    },
+    UploadFileToMultiplePeers {
+        session_id: String,
+        peer_ids: Vec<String>,
+        source: FileSource,
+        metadata: Option<JsonMap>,
+        reply: oneshot::Sender<AppResult<MultiPeerUploadResult>>,
     },
 
     // --- Dreams (M8) ---
@@ -389,7 +405,13 @@ impl Cmd {
             Self::CreateConclusion { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
+            Self::GetConclusionRepresentation { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
             Self::UploadFile { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Self::UploadFileToMultiplePeers { reply, .. } => {
                 let _ = reply.send(Err(err));
             }
             Self::ScheduleDream { reply, .. } => {
@@ -511,6 +533,18 @@ mod tests {
             peer_id: String::new(),
             observe_me: None,
             observe_others: None,
+            reply: tx,
+        }
+        .reply_with_error(AppError::Validation("v".to_string()));
+        assert_reply_err!(rx, "v");
+    }
+
+    #[test]
+    fn get_conclusion_representation_reply_with_error() {
+        let (tx, rx) = oneshot::channel::<AppResult<String>>();
+        Cmd::GetConclusionRepresentation {
+            observer_id: String::new(),
+            observed_id: String::new(),
             reply: tx,
         }
         .reply_with_error(AppError::Validation("v".to_string()));

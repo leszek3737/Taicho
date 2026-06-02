@@ -10,8 +10,8 @@ use crate::actor::commands::{Cmd, StreamEvent};
 use taicho::domain::raw_json::{JsonMap, RawJson};
 use taicho::domain::{
     ConclusionRow, DomainPage, FileSource, MessageRow, PageInfo, PeerContextView, PeerDetails,
-    PeerRow, QueueStatus, SearchScope, SessionContextView, SessionDetails, SessionPeerRow,
-    SessionRow, SessionSummariesView, SummaryKind, SummaryView,
+    PeerRow, QueueStatus, ReprOpts, SearchScope, SessionContextView, SessionDetails,
+    SessionPeerRow, SessionRow, SessionSummariesView, SummaryKind, SummaryView,
 };
 use taicho::error::{AppError, AppResult};
 
@@ -81,10 +81,11 @@ pub async fn handle(client: &Honcho, cmd: Cmd) {
         cmd @ (Cmd::ListConclusions { .. }
         | Cmd::QueryConclusions { .. }
         | Cmd::DeleteConclusion { .. }
-        | Cmd::CreateConclusion { .. }) => {
+        | Cmd::CreateConclusion { .. }
+        | Cmd::GetConclusionRepresentation { .. }) => {
             handle_conclusion_cmd(client, cmd).await;
         }
-        Cmd::UploadFile { .. } => {
+        Cmd::UploadFile { .. } | Cmd::UploadFileToMultiplePeers { .. } => {
             handle_upload_cmd(client, cmd).await;
         }
         cmd @ (Cmd::Connect { .. } | Cmd::Disconnect { .. }) => {
@@ -146,8 +147,12 @@ async fn handle_peer_cmd(client: &Honcho, cmd: Cmd) {
                 debug!("set_peer_card reply receiver dropped");
             }
         }
-        Cmd::GetPeerRepresentation { peer_id, reply } => {
-            let result = get_peer_representation(client, &peer_id).await;
+        Cmd::GetPeerRepresentation {
+            peer_id,
+            opts,
+            reply,
+        } => {
+            let result = get_peer_representation(client, &peer_id, &opts).await;
             if reply.send(result).is_err() {
                 debug!("get_peer_representation reply receiver dropped");
             }
@@ -460,9 +465,35 @@ async fn set_peer_card(
     Ok(peer.set_card(card).await?)
 }
 
-async fn get_peer_representation(client: &Honcho, peer_id: &str) -> AppResult<String> {
+async fn get_peer_representation(
+    client: &Honcho,
+    peer_id: &str,
+    opts: &ReprOpts,
+) -> AppResult<String> {
     let peer = client.peer(peer_id, None, None).await?;
-    Ok(peer.representation().await?)
+    let mut builder = peer.representation_builder();
+    if let Some(ref v) = opts.session_id {
+        builder = builder.session_id(v);
+    }
+    if let Some(ref v) = opts.target {
+        builder = builder.target(v);
+    }
+    if let Some(ref v) = opts.search_query {
+        builder = builder.search_query(v);
+    }
+    if let Some(v) = opts.search_top_k {
+        builder = builder.search_top_k(v);
+    }
+    if let Some(v) = opts.search_max_distance {
+        builder = builder.search_max_distance(v);
+    }
+    if let Some(v) = opts.include_most_frequent {
+        builder = builder.include_most_frequent(v);
+    }
+    if let Some(v) = opts.max_conclusions {
+        builder = builder.max_conclusions(v);
+    }
+    Ok(builder.send().await?)
 }
 
 async fn get_peer_context(client: &Honcho, peer_id: &str) -> AppResult<PeerContextView> {
@@ -1012,11 +1043,52 @@ async fn handle_upload_cmd(client: &Honcho, cmd: Cmd) {
             .await;
             let _ = reply.send(result);
         }
+        Cmd::UploadFileToMultiplePeers {
+            session_id,
+            peer_ids,
+            source,
+            metadata,
+            reply,
+        } => {
+            let result =
+                upload_to_multiple_peers(client, &session_id, &peer_ids, &source, metadata).await;
+            let _ = reply.send(result);
+        }
         other => {
             error!("unexpected command in handle_upload_cmd");
             drop(other);
         }
     }
+}
+
+async fn upload_to_multiple_peers(
+    client: &Honcho,
+    session_id: &str,
+    peer_ids: &[String],
+    source: &FileSource,
+    metadata: Option<JsonMap>,
+) -> AppResult<Vec<(String, AppResult<MessageRow>)>> {
+    let session = client.session(session_id, None, None, None).await?;
+    let mut results = Vec::with_capacity(peer_ids.len());
+    for pid in peer_ids {
+        let upload_result = async {
+            let mut builder = session.upload_file(honcho_sdk_file_source(source));
+            builder = builder.peer(pid);
+            if let Some(ref md) = metadata {
+                let val = serde_json::Value::Object(md.clone());
+                builder = builder.metadata(val);
+            }
+            let msgs = builder.send().await?;
+            if let Some(m) = msgs.into_iter().next() {
+                Ok(map_message_row(&m))
+            } else {
+                Err(AppError::Validation("no message returned".to_owned()))
+            }
+        }
+        .await;
+        results.push((pid.clone(), upload_result));
+    }
+    Ok(results)
 }
 
 fn honcho_sdk_file_source(src: &FileSource) -> honcho_ai::FileSource {
@@ -1077,6 +1149,16 @@ async fn handle_conclusion_cmd(client: &Honcho, cmd: Cmd) {
             let result = create_conclusion(client, &peer_id, observed_id.as_deref(), &input).await;
             if reply.send(result).is_err() {
                 debug!("create_conclusion reply receiver dropped");
+            }
+        }
+        Cmd::GetConclusionRepresentation {
+            observer_id,
+            observed_id,
+            reply,
+        } => {
+            let result = get_conclusion_representation(client, &observer_id, &observed_id).await;
+            if reply.send(result).is_err() {
+                debug!("get_conclusion_representation reply receiver dropped");
             }
         }
         other => {
@@ -1195,4 +1277,18 @@ async fn create_conclusion(
     } else {
         Err(AppError::Validation("no conclusion returned".to_owned()))
     }
+}
+
+async fn get_conclusion_representation(
+    client: &Honcho,
+    observer_id: &str,
+    observed_id: &str,
+) -> AppResult<String> {
+    let peer = client.peer(observer_id, None, None).await?;
+    let scope = if observer_id == observed_id {
+        peer.conclusions()
+    } else {
+        peer.conclusions_of(observed_id)
+    };
+    Ok(scope.representation().send().await?)
 }

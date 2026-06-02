@@ -9,6 +9,14 @@ use selection::{InspectorSection, SelectionState};
 use taicho::domain::WorkspaceInfo;
 pub use toast::{Toast, ToastKind};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Theme {
+    System,
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub connection: Signal<ConnectionState>,
@@ -25,6 +33,9 @@ pub struct AppState {
     // Dioxus use_context: clippy does not detect signal reads through rsx!
     #[allow(dead_code)]
     pub search_open: Signal<bool>,
+    // Dioxus use_context: clippy does not detect signal reads through rsx!
+    #[allow(dead_code)]
+    pub theme: Signal<Theme>,
 }
 
 impl AppState {

@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 use crate::actor;
 use crate::state::AppState;
+use crate::state::Theme;
 use crate::state::connection::ConnectionState;
 use crate::state::selection::{InspectorSection, SelectionState};
 use crate::ui::RootShell;
@@ -20,6 +21,7 @@ pub fn App() -> Element {
     let toasts = use_signal(Vec::new);
     let search_open = use_signal(|| false);
     let chat_streaming = use_signal(|| false);
+    let theme = use_signal(|| Theme::System);
 
     let _actor = use_coroutine(actor::run_honcho_actor);
 
@@ -32,6 +34,7 @@ pub fn App() -> Element {
         chat_streaming,
         toasts,
         search_open,
+        theme,
     });
 
     rsx! {

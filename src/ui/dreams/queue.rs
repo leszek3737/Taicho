@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use dioxus::prelude::*;
 use taicho::domain::QueueStatus;
 use taicho::error::AppError;
@@ -29,6 +31,7 @@ impl QueuePanelState {
 pub fn QueuePanel() -> Element {
     let actor: Coroutine<Cmd> = use_coroutine_handle::<Cmd>();
     let mut local: Signal<Option<QueuePanelState>> = use_signal(|| None);
+    let mut auto_refresh: Signal<bool> = use_signal(|| true);
 
     let fetch = use_callback(move |_: ()| {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -45,23 +48,58 @@ pub fn QueuePanel() -> Element {
         });
     });
 
+    // Initial fetch
     use_effect(move || {
         fetch.call(());
     });
 
+    // Auto-refresh every 5 seconds when enabled
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if *auto_refresh.read() {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                actor.send(Cmd::QueueStatus {
+                    observer_id: None,
+                    reply: tx,
+                });
+                let result = rx
+                    .await
+                    .map_err(|_| AppError::channel_closed("queue_status"))
+                    .and_then(|r| r);
+                local.set(Some(QueuePanelState::from_result(result)));
+            }
+        }
+    });
+
     let snapshot = local.read().clone();
+    let is_auto = *auto_refresh.read();
 
     rsx! {
         div { class: "queue-panel",
             div { class: "list-toolbar",
                 h3 { "Queue status" }
-                button {
-                    class: "secondary-button",
-                    onclick: move |_| {
-                        local.set(None);
-                        fetch.call(());
-                    },
-                    "Refresh"
+                div { class: "toolbar-actions",
+                    if is_auto {
+                        span { class: "auto-refresh-indicator", "● live" }
+                    }
+                    button {
+                        class: "toggle-button",
+                        class: if is_auto { "toggle-active" },
+                        onclick: move |_| {
+                            let current = *auto_refresh.read();
+                            auto_refresh.set(!current);
+                        },
+                        if is_auto { "Auto: on" } else { "Auto: off" }
+                    }
+                    button {
+                        class: "secondary-button",
+                        onclick: move |_| {
+                            local.set(None);
+                            fetch.call(());
+                        },
+                        "Refresh"
+                    }
                 }
             }
             match snapshot {

@@ -45,6 +45,9 @@ pub fn ConclusionList() -> Element {
     let mut conclusions: Signal<Option<ConclusionListState>> = use_signal(|| None);
     let mut current_page: Signal<u64> = use_signal(|| 1);
     let confirm_delete_id: Signal<Option<String>> = use_signal(|| None);
+    let mut repr_text: Signal<Option<String>> = use_signal(|| None);
+    let mut repr_error: Signal<Option<String>> = use_signal(|| None);
+    let mut repr_loading: Signal<bool> = use_signal(|| false);
 
     let fetch_list = use_callback(move |(obs_id, obd_id, page): (String, String, u64)| {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -168,6 +171,53 @@ pub fn ConclusionList() -> Element {
                     }
                 },
                 "Search"
+            }
+        }
+
+        if !ids_empty {
+            div { class: "conclusion-representation",
+                div { class: "conclusion-repr-header",
+                    h3 { "Representation" }
+                    button {
+                        class: "secondary-button",
+                        disabled: *repr_loading.read()
+                            || observer_id.read().is_empty()
+                            || observed_id.read().is_empty(),
+                        onclick: move |_| {
+                            let obs = observer_id.read().clone();
+                            let obd = observed_id.read().clone();
+                            if !obs.is_empty() && !obd.is_empty() {
+                                repr_loading.set(true);
+                                repr_error.set(None);
+                                repr_text.set(None);
+                                let (tx, rx) = tokio::sync::oneshot::channel();
+                                actor.send(Cmd::GetConclusionRepresentation {
+                                    observer_id: obs,
+                                    observed_id: obd,
+                                    reply: tx,
+                                });
+                                spawn(async move {
+                                    let result = rx
+                                        .await
+                                        .map_err(|_| AppError::channel_closed("get_conclusion_representation"))
+                                        .and_then(|r| r);
+                                    repr_loading.set(false);
+                                    match result {
+                                        Ok(text) => repr_text.set(Some(text)),
+                                        Err(e) => repr_error.set(Some(e.user_message())),
+                                    }
+                                });
+                            }
+                        },
+                        if *repr_loading.read() { "Generating..." } else { "Generate" }
+                    }
+                }
+                if let Some(text) = repr_text.read().as_ref() {
+                    pre { class: "representation-view", "{text}" }
+                }
+                if let Some(err) = repr_error.read().as_ref() {
+                    p { class: "error-text", "{err}" }
+                }
             }
         }
 

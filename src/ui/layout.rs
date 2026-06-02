@@ -118,6 +118,7 @@ fn InspectorShell() -> Element {
                                 p { "Select an item to view its raw JSON metadata." }
                             }
                         },
+                        InspectorSection::Logs => rsx! { super::logs::LogsPanel {} },
                     }
                 }
 

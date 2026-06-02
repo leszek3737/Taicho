@@ -42,6 +42,32 @@ dx bundle --platform desktop --release --package-types "macos" --package-types "
 3. The API key is stored in the **macOS Keychain**, never in the plain-text profile file.
 4. **Connect** → the status bar shows the workspace.
 
+## Screenshots
+
+<!-- TODO: Add screenshot — Main window showing the peer list sidebar and workspace overview -->
+![Main window — peer list](assets/screenshots/main-window.png)
+
+<!-- TODO: Add screenshot — Session detail view with message history and metadata -->
+![Session detail with messages](assets/screenshots/session-detail.png)
+
+<!-- TODO: Add screenshot — Chat/dialectic panel with streaming response -->
+![Chat panel](assets/screenshots/chat-panel.png)
+
+<!-- TODO: Add screenshot — Settings panel in dark theme -->
+![Settings (dark)](assets/screenshots/settings-dark.png)
+
+<!-- TODO: Add screenshot — Settings panel in light theme -->
+![Settings (light)](assets/screenshots/settings-light.png)
+
+<!-- TODO: Add screenshot — Command palette / search overlay -->
+![Search palette](assets/screenshots/search-palette.png)
+
+<!-- TODO: Add screenshot — Conclusions view for a session -->
+![Conclusions view](assets/screenshots/conclusions.png)
+
+> To capture: run the app with `dx serve`, open each view, and save a PNG to
+> `assets/screenshots/`. Retina (2x) preferred.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Not affiliated with Plastic Labs.

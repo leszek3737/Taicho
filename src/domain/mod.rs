@@ -13,7 +13,7 @@ pub use chat::{ChatMessage, ChatRole};
 pub use conclusion::{ConclusionInput, ConclusionRow};
 pub use message::MessageRow;
 pub use page::{DomainPage, PageInfo};
-pub use peer::{PeerContextView, PeerDetails, PeerRow};
+pub use peer::{PeerContextView, PeerDetails, PeerRow, ReprOpts};
 pub use queue::QueueStatus;
 pub use raw_json::{JsonMap, RawJson};
 pub use search::SearchScope;

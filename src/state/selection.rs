@@ -77,16 +77,18 @@ pub enum InspectorSection {
     Conclusions,
     Workspaces,
     RawJson,
+    Logs,
 }
 
 impl InspectorSection {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Peers,
         Self::Sessions,
         Self::Messages,
         Self::Conclusions,
         Self::Workspaces,
         Self::RawJson,
+        Self::Logs,
     ];
 
     pub fn label(self) -> &'static str {
@@ -97,6 +99,7 @@ impl InspectorSection {
             Self::Conclusions => "Conclusions",
             Self::Workspaces => "Workspaces",
             Self::RawJson => "Raw JSON",
+            Self::Logs => "Logs",
         }
     }
 }
